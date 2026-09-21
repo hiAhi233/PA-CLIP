@@ -1,0 +1,893 @@
+{
+  "stage": "stage1_vs_stage2__brain_f__seed222",
+  "meta": {
+    "when": "2026-09-21 22:30:17",
+    "python": "3.11.11",
+    "torch": "2.5.1+cu124",
+    "cuda": "12.4",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "config_path": "/hy-tmp/PA-CLIP-F/configs/brain_f.yaml",
+    "split": {
+      "val_cases": [],
+      "test_cases": []
+    },
+    "image_size": 224,
+    "patch_layers": [
+      3,
+      6,
+      9,
+      11
+    ],
+    "config": {
+      "data_root": "/hy-tmp/Brain_AD",
+      "meta_path": "/hy-tmp/PA-CLIP-F/dataset/metadata/brain.jsonl",
+      "cache_dir": "/hy-tmp/PA-CLIP-F/caches_brain",
+      "brain_split": "support44",
+      "val_cases": [],
+      "test_cases": [],
+      "image_size": 224,
+      "patch_layers": [
+        3,
+        6,
+        9,
+        11
+      ],
+      "eval_size": 240,
+      "class_templates": {
+        "normal": [
+          "a brain MRI scan"
+        ],
+        "tumor": [
+          "a brain MRI scan with tumor",
+          "a brain MRI scan with lesion"
+        ]
+      },
+      "seed": 222,
+      "normal_proto_k": 6,
+      "kmeans_n_init": 10,
+      "normal_pool_include_lesion_outside": false,
+      "proto_source": "few_shot",
+      "few_shot_normal": 40,
+      "few_shot_anomaly": 44,
+      "proto_augment_epoch": 10,
+      "double_norm": false,
+      "anomaly_tau": 2.0,
+      "attn_temp": 1.0,
+      "score_mode": "raw_max",
+      "q_img": 3,
+      "smooth_kernel": 0,
+      "train_scope": "few_shot",
+      "margin": 0.2,
+      "arcface_scale": 32.0,
+      "adapter_logit_scale": 100.0,
+      "stage1_lr": 0.001,
+      "stage1_lr_min": 1e-05,
+      "stage1_epochs": 20,
+      "stage1_batch": 16,
+      "beta_lesion": 1.0,
+      "ortho_weight": 0.0,
+      "patience": 5,
+      "cv_early_stop": false,
+      "seeds": [
+        111,
+        222,
+        333,
+        444,
+        555
+      ],
+      "stage2_lr_proto": 0.0005,
+      "stage2_lr_adapter": 0.0001,
+      "stage2_epochs": 40,
+      "stage2_batch": 16,
+      "reduce": "max",
+      "lse_tau": 0.1,
+      "q_max": 5,
+      "q_bar": 3,
+      "loc_b": 0.0,
+      "loc_delta_r": 1.0,
+      "loc_delta_a": 0.05,
+      "loc_w_abs": 0.5,
+      "lam_loc": 1.0,
+      "alpha_cls": 1.0,
+      "mask_empty_to_normal": true,
+      "lesion_source": "gt_mask",
+      "q_sel": 3,
+      "alpha_pt_grid": [
+        0.0,
+        0.5,
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        20.0,
+        30.0,
+        50.0
+      ],
+      "lam_pt_grid": [
+        0.0,
+        0.25,
+        0.5,
+        1.0,
+        2.0
+      ],
+      "heatmap_fuse_grid": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "heatmap_min_w": {
+        "mem": 0.25
+      },
+      "use_memory_bank": true,
+      "text": "namespace(enable=True, train_scope='few_shot', bottleneck=256, lambda_t=0.08, scale=20.0, m_dis=0.3, delta_div=0.5, lam_p=1.0, lam_d=0.5, lam_r=0.5, lam_v=0.2, lr=0.001, epochs=80, batch=16)",
+      "text_prompts": {
+        "global": {
+          "normal": [
+            "a brain MRI scan",
+            "a normal brain MRI"
+          ],
+          "anomaly": [
+            "a brain MRI scan with tumor",
+            "an abnormal brain MRI"
+          ]
+        },
+        "attribute": [
+          {
+            "name": "signal",
+            "normal": [
+              "a brain MRI with homogeneous signal"
+            ],
+            "anomaly": [
+              "a brain MRI with abnormal signal"
+            ]
+          },
+          {
+            "name": "symmetry",
+            "normal": [
+              "a symmetric brain MRI"
+            ],
+            "anomaly": [
+              "an asymmetric brain MRI"
+            ]
+          },
+          {
+            "name": "focus",
+            "normal": [
+              "a brain MRI without focal lesion"
+            ],
+            "anomaly": [
+              "a brain MRI with a focal lesion"
+            ]
+          },
+          {
+            "name": "morphology",
+            "normal": [
+              "a brain MRI with normal morphology"
+            ],
+            "anomaly": [
+              "a brain MRI with abnormal morphology"
+            ]
+          }
+        ],
+        "lesion": {
+          "normal": [
+            "normal brain tissue",
+            "healthy brain parenchyma"
+          ],
+          "anomaly": [
+            "tumor region",
+            "lesion area"
+          ]
+        }
+      },
+      "results_dir": "/hy-tmp/PA-CLIP-F/results"
+    },
+    "smooth_kernel": 0,
+    "proto_source": "few_shot",
+    "double_norm": false,
+    "train_scope": "few_shot",
+    "margin": 0.2,
+    "arcface_scale": 32.0,
+    "seed": 222,
+    "stage1_hist": [
+      {
+        "epoch": 0,
+        "loss": 2.2970316886901854,
+        "cos_img": 0.9036046862602234,
+        "cos_les": 0.7482540607452393
+      },
+      {
+        "epoch": 1,
+        "loss": 1.6402923941612244,
+        "cos_img": 0.8792391419410706,
+        "cos_les": 0.7207032442092896
+      },
+      {
+        "epoch": 2,
+        "loss": 1.2474952578544616,
+        "cos_img": 0.8495478630065918,
+        "cos_les": 0.70533686876297
+      },
+      {
+        "epoch": 3,
+        "loss": 0.6978525459766388,
+        "cos_img": 0.8213924765586853,
+        "cos_les": 0.7008600234985352
+      },
+      {
+        "epoch": 4,
+        "loss": 0.2206345744431019,
+        "cos_img": 0.7967299222946167,
+        "cos_les": 0.6970862746238708
+      },
+      {
+        "epoch": 5,
+        "loss": 0.4220439426600933,
+        "cos_img": 0.7774386405944824,
+        "cos_les": 0.694520115852356
+      },
+      {
+        "epoch": 6,
+        "loss": 0.34078671783208847,
+        "cos_img": 0.7632030248641968,
+        "cos_les": 0.6906814575195312
+      },
+      {
+        "epoch": 7,
+        "loss": 0.1445495616644621,
+        "cos_img": 0.7532343864440918,
+        "cos_les": 0.6849773526191711
+      },
+      {
+        "epoch": 8,
+        "loss": 0.09156127795577049,
+        "cos_img": 0.7464381456375122,
+        "cos_les": 0.6772404313087463
+      },
+      {
+        "epoch": 9,
+        "loss": 0.03476731199771166,
+        "cos_img": 0.7418443560600281,
+        "cos_les": 0.6703722476959229
+      },
+      {
+        "epoch": 10,
+        "loss": 0.03804435916244984,
+        "cos_img": 0.7385885715484619,
+        "cos_les": 0.6649117469787598
+      },
+      {
+        "epoch": 11,
+        "loss": 0.019412615802139044,
+        "cos_img": 0.7363725900650024,
+        "cos_les": 0.6608599424362183
+      },
+      {
+        "epoch": 12,
+        "loss": 0.03266053311526775,
+        "cos_img": 0.7347875237464905,
+        "cos_les": 0.6573905348777771
+      },
+      {
+        "epoch": 13,
+        "loss": 0.028037078492343426,
+        "cos_img": 0.7336550951004028,
+        "cos_les": 0.6543921232223511
+      },
+      {
+        "epoch": 14,
+        "loss": 0.018200093880295753,
+        "cos_img": 0.7328367233276367,
+        "cos_les": 0.6523048877716064
+      },
+      {
+        "epoch": 15,
+        "loss": 0.020128918439149858,
+        "cos_img": 0.7323146462440491,
+        "cos_les": 0.6510330438613892
+      },
+      {
+        "epoch": 16,
+        "loss": 0.032374591752886775,
+        "cos_img": 0.7319597601890564,
+        "cos_les": 0.6500939130783081
+      },
+      {
+        "epoch": 17,
+        "loss": 0.020207929611206054,
+        "cos_img": 0.7317525148391724,
+        "cos_les": 0.6495453119277954
+      },
+      {
+        "epoch": 18,
+        "loss": 0.016251540370285512,
+        "cos_img": 0.7316471934318542,
+        "cos_les": 0.6493031978607178
+      },
+      {
+        "epoch": 19,
+        "loss": 0.017531019821763038,
+        "cos_img": 0.7315969467163086,
+        "cos_les": 0.6491888165473938
+      }
+    ],
+    "stage1_best_epoch": 19,
+    "stage2_hist": [
+      {
+        "epoch": 0,
+        "loss": 2.1871126651763917,
+        "drift_norm": 0.3079492449760437,
+        "drift_anom": 0.001080632209777832
+      },
+      {
+        "epoch": 1,
+        "loss": 2.2023518562316893,
+        "drift_norm": 0.3089830279350281,
+        "drift_anom": 0.003983676433563232
+      },
+      {
+        "epoch": 2,
+        "loss": 1.9628401517868042,
+        "drift_norm": 0.3105490803718567,
+        "drift_anom": 0.008562743663787842
+      },
+      {
+        "epoch": 3,
+        "loss": 1.8630318641662598,
+        "drift_norm": 0.31251662969589233,
+        "drift_anom": 0.014722704887390137
+      },
+      {
+        "epoch": 4,
+        "loss": 1.8699265956878661,
+        "drift_norm": 0.3150554299354553,
+        "drift_anom": 0.022211313247680664
+      },
+      {
+        "epoch": 5,
+        "loss": 1.8095623970031738,
+        "drift_norm": 0.3183066248893738,
+        "drift_anom": 0.03045809268951416
+      },
+      {
+        "epoch": 6,
+        "loss": 1.7526649713516236,
+        "drift_norm": 0.32217979431152344,
+        "drift_anom": 0.0395047664642334
+      },
+      {
+        "epoch": 7,
+        "loss": 1.8511998176574707,
+        "drift_norm": 0.3265015482902527,
+        "drift_anom": 0.04907935857772827
+      },
+      {
+        "epoch": 8,
+        "loss": 1.467423176765442,
+        "drift_norm": 0.33116859197616577,
+        "drift_anom": 0.059149086475372314
+      },
+      {
+        "epoch": 9,
+        "loss": 1.6804760456085206,
+        "drift_norm": 0.33614230155944824,
+        "drift_anom": 0.06932038068771362
+      },
+      {
+        "epoch": 10,
+        "loss": 1.4745068311691285,
+        "drift_norm": 0.34129196405410767,
+        "drift_anom": 0.079170823097229
+      },
+      {
+        "epoch": 11,
+        "loss": 1.4051383972167968,
+        "drift_norm": 0.34639620780944824,
+        "drift_anom": 0.08884847164154053
+      },
+      {
+        "epoch": 12,
+        "loss": 1.7371651649475097,
+        "drift_norm": 0.35137856006622314,
+        "drift_anom": 0.09810769557952881
+      },
+      {
+        "epoch": 13,
+        "loss": 1.677758240699768,
+        "drift_norm": 0.35625946521759033,
+        "drift_anom": 0.10730093717575073
+      },
+      {
+        "epoch": 14,
+        "loss": 1.6488249063491822,
+        "drift_norm": 0.36109423637390137,
+        "drift_anom": 0.11640393733978271
+      },
+      {
+        "epoch": 15,
+        "loss": 1.659378433227539,
+        "drift_norm": 0.3657444715499878,
+        "drift_anom": 0.12532997131347656
+      },
+      {
+        "epoch": 16,
+        "loss": 1.3120522618293762,
+        "drift_norm": 0.3702482581138611,
+        "drift_anom": 0.13366520404815674
+      },
+      {
+        "epoch": 17,
+        "loss": 1.2649581909179688,
+        "drift_norm": 0.37463510036468506,
+        "drift_anom": 0.14155471324920654
+      },
+      {
+        "epoch": 18,
+        "loss": 1.4043768286705016,
+        "drift_norm": 0.3788357973098755,
+        "drift_anom": 0.14898091554641724
+      },
+      {
+        "epoch": 19,
+        "loss": 1.5814301729202271,
+        "drift_norm": 0.38264548778533936,
+        "drift_anom": 0.155930757522583
+      },
+      {
+        "epoch": 20,
+        "loss": 1.4356053233146668,
+        "drift_norm": 0.3861202597618103,
+        "drift_anom": 0.16261816024780273
+      },
+      {
+        "epoch": 21,
+        "loss": 1.243972933292389,
+        "drift_norm": 0.3893693685531616,
+        "drift_anom": 0.1685497760772705
+      },
+      {
+        "epoch": 22,
+        "loss": 1.416232669353485,
+        "drift_norm": 0.3923860192298889,
+        "drift_anom": 0.17382490634918213
+      },
+      {
+        "epoch": 23,
+        "loss": 1.6655495643615723,
+        "drift_norm": 0.39506345987319946,
+        "drift_anom": 0.17862468957901
+      },
+      {
+        "epoch": 24,
+        "loss": 1.400819754600525,
+        "drift_norm": 0.3974528908729553,
+        "drift_anom": 0.18312394618988037
+      },
+      {
+        "epoch": 25,
+        "loss": 1.3941020965576172,
+        "drift_norm": 0.399613618850708,
+        "drift_anom": 0.18706214427947998
+      },
+      {
+        "epoch": 26,
+        "loss": 1.4402125835418702,
+        "drift_norm": 0.4015498161315918,
+        "drift_anom": 0.19046944379806519
+      },
+      {
+        "epoch": 27,
+        "loss": 1.6959474086761475,
+        "drift_norm": 0.4031972289085388,
+        "drift_anom": 0.1936877965927124
+      },
+      {
+        "epoch": 28,
+        "loss": 1.1684820413589478,
+        "drift_norm": 0.4046288728713989,
+        "drift_anom": 0.19639503955841064
+      },
+      {
+        "epoch": 29,
+        "loss": 1.4560551524162293,
+        "drift_norm": 0.40585029125213623,
+        "drift_anom": 0.19873559474945068
+      },
+      {
+        "epoch": 30,
+        "loss": 1.3488304257392882,
+        "drift_norm": 0.40689098834991455,
+        "drift_anom": 0.20064252614974976
+      },
+      {
+        "epoch": 31,
+        "loss": 1.4157330632209777,
+        "drift_norm": 0.4077277183532715,
+        "drift_anom": 0.20212286710739136
+      },
+      {
+        "epoch": 32,
+        "loss": 1.5190686464309693,
+        "drift_norm": 0.40839916467666626,
+        "drift_anom": 0.20328158140182495
+      },
+      {
+        "epoch": 33,
+        "loss": 1.3141862630844117,
+        "drift_norm": 0.4089064598083496,
+        "drift_anom": 0.20421737432479858
+      },
+      {
+        "epoch": 34,
+        "loss": 1.4687323808670043,
+        "drift_norm": 0.4092833399772644,
+        "drift_anom": 0.20492452383041382
+      },
+      {
+        "epoch": 35,
+        "loss": 1.4481090307235718,
+        "drift_norm": 0.4095391631126404,
+        "drift_anom": 0.20543289184570312
+      },
+      {
+        "epoch": 36,
+        "loss": 1.3749774932861327,
+        "drift_norm": 0.40970379114151,
+        "drift_anom": 0.2057526707649231
+      },
+      {
+        "epoch": 37,
+        "loss": 1.640161919593811,
+        "drift_norm": 0.4097937345504761,
+        "drift_anom": 0.20592820644378662
+      },
+      {
+        "epoch": 38,
+        "loss": 1.1714158058166504,
+        "drift_norm": 0.40983742475509644,
+        "drift_anom": 0.20601218938827515
+      },
+      {
+        "epoch": 39,
+        "loss": 1.2188466548919679,
+        "drift_norm": 0.4098571538925171,
+        "drift_anom": 0.20604866743087769
+      }
+    ],
+    "stage2_best_epoch": 39
+  },
+  "rows": [
+    {
+      "variant": "Stage1 (冻结原型)",
+      "tag": "Stage1 (冻结原型)",
+      "alpha_pt": 50.0,
+      "lam_pt": 0.0,
+      "val_acc": 11.41649,
+      "edge_warning": 1,
+      "acc_image_only": 82.772541,
+      "acc_lesion_only": 82.772541,
+      "acc_fused": 82.826376,
+      "acc_text_fused": 82.772541,
+      "w_heat": 0.5,
+      "w_text": 0.1,
+      "w_adapt": 0.4,
+      "image_auc": 0.959268,
+      "image_ap": 0.991627,
+      "alpha_fuse": 0.05,
+      "oof_img_auc": 0.93648,
+      "auc_heat_alone": 0.899257,
+      "auc_text_alone": 0.499837,
+      "auc_adapt_alone": 0.921201,
+      "auc_3signal": 0.959268,
+      "pixel_auc_paclip": 0.983208,
+      "pixel_ap_paclip": 0.76821,
+      "pixel_auc_paclip_fixed": 0.983051,
+      "pixel_ap_paclip_fixed": 0.766106,
+      "pixel_auc_ours": 0.985325,
+      "pixel_ap_ours": 0.752636,
+      "pixel_auc_ours_fixed": 0.985205,
+      "pixel_ap_ours_fixed": 0.751024,
+      "pixel_aupro": 0.877573,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.906334,
+      "hit@1_strict": 0.874797,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.977426,
+      "hit@3_strict": 0.943415,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.993935,
+      "hit@10_strict": 0.95935,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.440734,
+      "background_z": -0.098556,
+      "gap_sigma": 2.53929,
+      "peak_gap_z": 0.546942
+    },
+    {
+      "variant": "Stage1 (冻结原型) proto-only",
+      "pixel_auc_paclip": 0.961283,
+      "pixel_ap_paclip": 0.51939,
+      "pixel_auc_paclip_fixed": 0.961203,
+      "pixel_ap_paclip_fixed": 0.518024,
+      "pixel_auc_ours": 0.962651,
+      "pixel_ap_ours": 0.548544,
+      "pixel_auc_ours_fixed": 0.962691,
+      "pixel_ap_ours_fixed": 0.548521,
+      "pixel_aupro": 0.77125,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.533019,
+      "hit@1_strict": 0.514472,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.820755,
+      "hit@3_strict": 0.792195,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.961927,
+      "hit@10_strict": 0.928455,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 1.336783,
+      "background_z": -0.05567,
+      "gap_sigma": 1.392453,
+      "peak_gap_z": 0.002031
+    },
+    {
+      "variant": "Stage1 (冻结原型) text-only",
+      "pixel_auc_paclip": 0.979836,
+      "pixel_ap_paclip": 0.752681,
+      "pixel_auc_paclip_fixed": 0.979621,
+      "pixel_ap_paclip_fixed": 0.750142,
+      "pixel_auc_ours": 0.984568,
+      "pixel_ap_ours": 0.769009,
+      "pixel_auc_ours_fixed": 0.984453,
+      "pixel_ap_ours_fixed": 0.767492,
+      "pixel_aupro": 0.848651,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.896563,
+      "hit@1_strict": 0.865366,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.975404,
+      "hit@3_strict": 0.941463,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.992251,
+      "hit@10_strict": 0.957724,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.878572,
+      "background_z": -0.115312,
+      "gap_sigma": 2.993884,
+      "peak_gap_z": 0.836114
+    },
+    {
+      "variant": "Stage1 (冻结原型) mem-only",
+      "pixel_auc_paclip": 0.963539,
+      "pixel_ap_paclip": 0.535076,
+      "pixel_auc_paclip_fixed": 0.963477,
+      "pixel_ap_paclip_fixed": 0.533785,
+      "pixel_auc_ours": 0.954254,
+      "pixel_ap_ours": 0.431293,
+      "pixel_auc_ours_fixed": 0.954493,
+      "pixel_ap_ours_fixed": 0.43173,
+      "pixel_aupro": 0.73131,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.69407,
+      "hit@1_strict": 0.669919,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.90903,
+      "hit@3_strict": 0.877398,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.981806,
+      "hit@10_strict": 0.947642,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 1.555339,
+      "background_z": -0.063512,
+      "gap_sigma": 1.618851,
+      "peak_gap_z": 0.087738
+    },
+    {
+      "variant": "Stage1 (冻结原型) fused",
+      "pixel_auc_paclip": 0.983208,
+      "pixel_ap_paclip": 0.76821,
+      "pixel_auc_paclip_fixed": 0.983051,
+      "pixel_ap_paclip_fixed": 0.766106,
+      "pixel_auc_ours": 0.985325,
+      "pixel_ap_ours": 0.752636,
+      "pixel_auc_ours_fixed": 0.985205,
+      "pixel_ap_ours_fixed": 0.751024,
+      "pixel_aupro": 0.877573,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.906334,
+      "hit@1_strict": 0.874797,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.977426,
+      "hit@3_strict": 0.943415,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.993935,
+      "hit@10_strict": 0.95935,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.440734,
+      "background_z": -0.098556,
+      "gap_sigma": 2.53929,
+      "peak_gap_z": 0.546942
+    },
+    {
+      "variant": "Stage2 (解冻原型)",
+      "tag": "Stage2 (解冻原型)",
+      "alpha_pt": 0.0,
+      "lam_pt": 0.0,
+      "val_acc": 9.302326,
+      "edge_warning": 1,
+      "acc_image_only": 82.772541,
+      "acc_lesion_only": 82.772541,
+      "acc_fused": 82.772541,
+      "acc_text_fused": 82.772541,
+      "w_heat": 0.5,
+      "w_text": 0.2,
+      "w_adapt": 0.3,
+      "image_auc": 0.964704,
+      "image_ap": 0.992859,
+      "alpha_fuse": 0.05,
+      "oof_img_auc": 0.950466,
+      "auc_heat_alone": 0.937699,
+      "auc_text_alone": 0.499837,
+      "auc_adapt_alone": 0.918494,
+      "auc_3signal": 0.964704,
+      "pixel_auc_paclip": 0.985481,
+      "pixel_ap_paclip": 0.796386,
+      "pixel_auc_paclip_fixed": 0.985369,
+      "pixel_ap_paclip_fixed": 0.794986,
+      "pixel_auc_ours": 0.98812,
+      "pixel_ap_ours": 0.798607,
+      "pixel_auc_ours_fixed": 0.988032,
+      "pixel_ap_ours_fixed": 0.797647,
+      "pixel_aupro": 0.894593,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.953504,
+      "hit@1_strict": 0.920325,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.982817,
+      "hit@3_strict": 0.948618,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.994609,
+      "hit@10_strict": 0.96,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.220724,
+      "background_z": -0.089751,
+      "gap_sigma": 2.310475,
+      "peak_gap_z": 0.664011
+    },
+    {
+      "variant": "Stage2 (解冻原型) proto-only",
+      "pixel_auc_paclip": 0.983278,
+      "pixel_ap_paclip": 0.783927,
+      "pixel_auc_paclip_fixed": 0.983103,
+      "pixel_ap_paclip_fixed": 0.78199,
+      "pixel_auc_ours": 0.989227,
+      "pixel_ap_ours": 0.829699,
+      "pixel_auc_ours_fixed": 0.989142,
+      "pixel_ap_ours_fixed": 0.828611,
+      "pixel_aupro": 0.881921,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.954515,
+      "hit@1_strict": 0.921301,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.981469,
+      "hit@3_strict": 0.947317,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.993261,
+      "hit@10_strict": 0.958699,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.733097,
+      "background_z": -0.10956,
+      "gap_sigma": 2.842656,
+      "peak_gap_z": 1.133916
+    },
+    {
+      "variant": "Stage2 (解冻原型) text-only",
+      "pixel_auc_paclip": 0.979836,
+      "pixel_ap_paclip": 0.752681,
+      "pixel_auc_paclip_fixed": 0.979621,
+      "pixel_ap_paclip_fixed": 0.750142,
+      "pixel_auc_ours": 0.984568,
+      "pixel_ap_ours": 0.769009,
+      "pixel_auc_ours_fixed": 0.984453,
+      "pixel_ap_ours_fixed": 0.767492,
+      "pixel_aupro": 0.848651,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.896563,
+      "hit@1_strict": 0.865366,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.975404,
+      "hit@3_strict": 0.941463,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.992251,
+      "hit@10_strict": 0.957724,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.878572,
+      "background_z": -0.115312,
+      "gap_sigma": 2.993884,
+      "peak_gap_z": 0.836114
+    },
+    {
+      "variant": "Stage2 (解冻原型) mem-only",
+      "pixel_auc_paclip": 0.963539,
+      "pixel_ap_paclip": 0.535076,
+      "pixel_auc_paclip_fixed": 0.963477,
+      "pixel_ap_paclip_fixed": 0.533785,
+      "pixel_auc_ours": 0.954254,
+      "pixel_ap_ours": 0.431293,
+      "pixel_auc_ours_fixed": 0.954493,
+      "pixel_ap_ours_fixed": 0.43173,
+      "pixel_aupro": 0.73131,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.69407,
+      "hit@1_strict": 0.669919,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.90903,
+      "hit@3_strict": 0.877398,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.981806,
+      "hit@10_strict": 0.947642,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 1.555339,
+      "background_z": -0.063512,
+      "gap_sigma": 1.618851,
+      "peak_gap_z": 0.087738
+    },
+    {
+      "variant": "Stage2 (解冻原型) fused",
+      "pixel_auc_paclip": 0.985481,
+      "pixel_ap_paclip": 0.796386,
+      "pixel_auc_paclip_fixed": 0.985369,
+      "pixel_ap_paclip_fixed": 0.794986,
+      "pixel_auc_ours": 0.98812,
+      "pixel_ap_ours": 0.798607,
+      "pixel_auc_ours_fixed": 0.988032,
+      "pixel_ap_ours_fixed": 0.797647,
+      "pixel_aupro": 0.894593,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.953504,
+      "hit@1_strict": 0.920325,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.982817,
+      "hit@3_strict": 0.948618,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.994609,
+      "hit@10_strict": 0.96,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.220724,
+      "background_z": -0.089751,
+      "gap_sigma": 2.310475,
+      "peak_gap_z": 0.664011
+    }
+  ]
+}

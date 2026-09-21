@@ -1,0 +1,365 @@
+{
+  "stage": "text__brain_f__seed111",
+  "meta": {
+    "when": "2026-09-21 21:51:09",
+    "python": "3.11.11",
+    "torch": "2.5.1+cu124",
+    "cuda": "12.4",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "config_path": "/hy-tmp/PA-CLIP-F/configs/brain_f.yaml",
+    "split": {
+      "val_cases": [],
+      "test_cases": []
+    },
+    "image_size": 224,
+    "patch_layers": [
+      3,
+      6,
+      9,
+      11
+    ],
+    "config": {
+      "data_root": "/hy-tmp/Brain_AD",
+      "meta_path": "/hy-tmp/PA-CLIP-F/dataset/metadata/brain.jsonl",
+      "cache_dir": "/hy-tmp/PA-CLIP-F/caches_brain",
+      "brain_split": "support44",
+      "val_cases": [],
+      "test_cases": [],
+      "image_size": 224,
+      "patch_layers": [
+        3,
+        6,
+        9,
+        11
+      ],
+      "eval_size": 240,
+      "class_templates": {
+        "normal": [
+          "a brain MRI scan"
+        ],
+        "tumor": [
+          "a brain MRI scan with tumor",
+          "a brain MRI scan with lesion"
+        ]
+      },
+      "seed": 111,
+      "normal_proto_k": 6,
+      "kmeans_n_init": 10,
+      "normal_pool_include_lesion_outside": false,
+      "proto_source": "few_shot",
+      "few_shot_normal": 40,
+      "few_shot_anomaly": 44,
+      "proto_augment_epoch": 10,
+      "double_norm": false,
+      "anomaly_tau": 2.0,
+      "attn_temp": 1.0,
+      "score_mode": "raw_max",
+      "q_img": 3,
+      "smooth_kernel": 0,
+      "train_scope": "few_shot",
+      "margin": 0.2,
+      "arcface_scale": 32.0,
+      "adapter_logit_scale": 100.0,
+      "stage1_lr": 0.001,
+      "stage1_lr_min": 1e-05,
+      "stage1_epochs": 20,
+      "stage1_batch": 16,
+      "beta_lesion": 1.0,
+      "ortho_weight": 0.0,
+      "patience": 5,
+      "cv_early_stop": false,
+      "seeds": [
+        111,
+        222,
+        333,
+        444,
+        555
+      ],
+      "stage2_lr_proto": 0.0005,
+      "stage2_lr_adapter": 0.0001,
+      "stage2_epochs": 40,
+      "stage2_batch": 16,
+      "reduce": "max",
+      "lse_tau": 0.1,
+      "q_max": 5,
+      "q_bar": 3,
+      "loc_b": 0.0,
+      "loc_delta_r": 1.0,
+      "loc_delta_a": 0.05,
+      "loc_w_abs": 0.5,
+      "lam_loc": 1.0,
+      "alpha_cls": 1.0,
+      "mask_empty_to_normal": true,
+      "lesion_source": "gt_mask",
+      "q_sel": 3,
+      "alpha_pt_grid": [
+        0.0,
+        0.5,
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        20.0,
+        30.0,
+        50.0
+      ],
+      "lam_pt_grid": [
+        0.0,
+        0.25,
+        0.5,
+        1.0,
+        2.0
+      ],
+      "heatmap_fuse_grid": [
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+      ],
+      "heatmap_min_w": {
+        "mem": 0.25
+      },
+      "use_memory_bank": true,
+      "text": "namespace(enable=True, train_scope='few_shot', bottleneck=256, lambda_t=0.08, scale=20.0, m_dis=0.3, delta_div=0.5, lam_p=1.0, lam_d=0.5, lam_r=0.5, lam_v=0.2, lr=0.001, epochs=80, batch=16)",
+      "text_prompts": {
+        "global": {
+          "normal": [
+            "a brain MRI scan",
+            "a normal brain MRI"
+          ],
+          "anomaly": [
+            "a brain MRI scan with tumor",
+            "an abnormal brain MRI"
+          ]
+        },
+        "attribute": [
+          {
+            "name": "signal",
+            "normal": [
+              "a brain MRI with homogeneous signal"
+            ],
+            "anomaly": [
+              "a brain MRI with abnormal signal"
+            ]
+          },
+          {
+            "name": "symmetry",
+            "normal": [
+              "a symmetric brain MRI"
+            ],
+            "anomaly": [
+              "an asymmetric brain MRI"
+            ]
+          },
+          {
+            "name": "focus",
+            "normal": [
+              "a brain MRI without focal lesion"
+            ],
+            "anomaly": [
+              "a brain MRI with a focal lesion"
+            ]
+          },
+          {
+            "name": "morphology",
+            "normal": [
+              "a brain MRI with normal morphology"
+            ],
+            "anomaly": [
+              "a brain MRI with abnormal morphology"
+            ]
+          }
+        ],
+        "lesion": {
+          "normal": [
+            "normal brain tissue",
+            "healthy brain parenchyma"
+          ],
+          "anomaly": [
+            "tumor region",
+            "lesion area"
+          ]
+        }
+      },
+      "results_dir": "/hy-tmp/PA-CLIP-F/results"
+    },
+    "best_ep": 80,
+    "fuse_w": {
+      "proto": 0.0,
+      "text": 0.25,
+      "mem": 0.75
+    },
+    "fuse_alpha": 0.05,
+    "fuse_meta": {
+      "hit@1": 0.9015151533213529,
+      "oof_img_auc": 0.7826340326340325
+    },
+    "seed": 111
+  },
+  "rows": [
+    {
+      "variant": "text-adapter",
+      "tag": "text-adapter",
+      "alpha_pt": 0.0,
+      "lam_pt": 0.0,
+      "val_acc": NaN,
+      "edge_warning": 0,
+      "acc_image_only": 82.772541,
+      "acc_lesion_only": NaN,
+      "acc_fused": 82.772541,
+      "acc_text_fused": 82.772541,
+      "w_heat": 0.05,
+      "w_text": 0.95,
+      "w_adapt": 0.0,
+      "image_auc": 0.829086,
+      "image_ap": 0.957909,
+      "alpha_fuse": 0.05,
+      "oof_img_auc": 0.782634,
+      "auc_heat_alone": 0.829086,
+      "auc_text_alone": 0.5,
+      "pixel_auc_paclip": 0.982069,
+      "pixel_ap_paclip": 0.741897,
+      "pixel_auc_paclip_fixed": 0.98192,
+      "pixel_ap_paclip_fixed": 0.739798,
+      "pixel_auc_ours": 0.983249,
+      "pixel_ap_ours": 0.721985,
+      "pixel_auc_ours_fixed": 0.983108,
+      "pixel_ap_ours_fixed": 0.720228,
+      "pixel_aupro": 0.875222,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.8969,
+      "hit@1_strict": 0.865691,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.977089,
+      "hit@3_strict": 0.943089,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.993598,
+      "hit@10_strict": 0.959024,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.000827,
+      "background_z": -0.0814,
+      "gap_sigma": 2.082227,
+      "peak_gap_z": 0.317659
+    },
+    {
+      "variant": "text-adapter proto-only",
+      "pixel_auc_paclip": 0.962883,
+      "pixel_ap_paclip": 0.542149,
+      "pixel_auc_paclip_fixed": 0.962901,
+      "pixel_ap_paclip_fixed": 0.541159,
+      "pixel_auc_ours": 0.966549,
+      "pixel_ap_ours": 0.581859,
+      "pixel_auc_ours_fixed": 0.966643,
+      "pixel_ap_ours_fixed": 0.581915,
+      "pixel_aupro": 0.789662,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.559299,
+      "hit@1_strict": 0.539837,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.830863,
+      "hit@3_strict": 0.801951,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.96597,
+      "hit@10_strict": 0.932358,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 1.40094,
+      "background_z": -0.058378,
+      "gap_sigma": 1.459318,
+      "peak_gap_z": 0.011143
+    },
+    {
+      "variant": "text-adapter text-only",
+      "pixel_auc_paclip": 0.979827,
+      "pixel_ap_paclip": 0.752585,
+      "pixel_auc_paclip_fixed": 0.979613,
+      "pixel_ap_paclip_fixed": 0.750039,
+      "pixel_auc_ours": 0.98479,
+      "pixel_ap_ours": 0.771613,
+      "pixel_auc_ours_fixed": 0.984682,
+      "pixel_ap_ours_fixed": 0.770144,
+      "pixel_aupro": 0.849465,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.899596,
+      "hit@1_strict": 0.868293,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.975404,
+      "hit@3_strict": 0.941463,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.992588,
+      "hit@10_strict": 0.958049,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.876798,
+      "background_z": -0.115257,
+      "gap_sigma": 2.992056,
+      "peak_gap_z": 0.843049
+    },
+    {
+      "variant": "text-adapter mem-only",
+      "pixel_auc_paclip": 0.960182,
+      "pixel_ap_paclip": 0.502526,
+      "pixel_auc_paclip_fixed": 0.960063,
+      "pixel_ap_paclip_fixed": 0.500975,
+      "pixel_auc_ours": 0.948299,
+      "pixel_ap_ours": 0.383875,
+      "pixel_auc_ours_fixed": 0.948511,
+      "pixel_ap_ours_fixed": 0.384085,
+      "pixel_aupro": 0.723895,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.625674,
+      "hit@1_strict": 0.603902,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.877358,
+      "hit@3_strict": 0.846829,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.9781,
+      "hit@10_strict": 0.944065,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 1.529382,
+      "background_z": -0.062733,
+      "gap_sigma": 1.592115,
+      "peak_gap_z": 0.052983
+    },
+    {
+      "variant": "text-adapter fused",
+      "pixel_auc_paclip": 0.982069,
+      "pixel_ap_paclip": 0.741897,
+      "pixel_auc_paclip_fixed": 0.98192,
+      "pixel_ap_paclip_fixed": 0.739798,
+      "pixel_auc_ours": 0.983249,
+      "pixel_ap_ours": 0.721985,
+      "pixel_auc_ours_fixed": 0.983108,
+      "pixel_ap_ours_fixed": 0.720228,
+      "pixel_aupro": 0.875222,
+      "n_pixel_slices": 3075,
+      "hit@1_valid": 0.8969,
+      "hit@1_strict": 0.865691,
+      "hit@1_chance": 0.038548,
+      "hit@3_valid": 0.977089,
+      "hit@3_strict": 0.943089,
+      "hit@3_chance": 0.115645,
+      "hit@10_valid": 0.993598,
+      "hit@10_strict": 0.959024,
+      "hit@10_chance": 0.38521,
+      "n_valid": 2968,
+      "n_total": 3075,
+      "lesion_area_mean": 0.039938,
+      "lesion_z": 2.000827,
+      "background_z": -0.0814,
+      "gap_sigma": 2.082227,
+      "peak_gap_z": 0.317659
+    }
+  ]
+}

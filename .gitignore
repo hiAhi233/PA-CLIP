@@ -1,0 +1,25 @@
+# ---- 特征缓存(--stage cache 生成,约 15 GB)----
+caches/
+caches_brain/
+caches*/
+*.npy
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---- 可视化图(--stage visualize 可重新生成)----
+visualize/
+
+# ---- 训练日志 ----
+*.log

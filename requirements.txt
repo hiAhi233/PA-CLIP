@@ -1,0 +1,23 @@
+# 说明:torch / torchvision 请按你的 CUDA 版本单独安装,不要用这里的约束。
+# Blackwell(sm_120,如 RTX 50 系)需要 torch>=2.7 + cu128;Ada/Ampere 用任意 torch>=2.0 即可。
+torch>=2.0
+torchvision
+
+# --- 项目本体直接 import ---
+numpy
+Pillow
+pyyaml
+tqdm
+scikit-learn        # fusion / evaluate 里的 roc_auc_score、average_precision_score
+opencv-python       # 热力图 cv2.applyColorMap
+scipy               # metrics.aupro 里的 scipy.ndimage.label
+
+# --- vendored open_clip 需要 ---
+timm
+transformers
+sentencepiece
+huggingface_hub
+ftfy                # open_clip/src/open_clip/tokenizer.py(模块级 import)
+regex               # 同上
+fsspec              # tokenizer.py 里远程路径分支,函数级
+nltk                # tokenizer.py 的 SimpleTokenizer 分支,函数级

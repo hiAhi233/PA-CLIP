@@ -1,0 +1,150 @@
+# ============================================================
+# PA-CLIP-F / BMAD Brain (BraTS2021 slices)
+# 切分沿用 BMAD 官方划分(train / valid / test),与免训练基线严格可比。
+# ============================================================
+
+# ---- 路径 ----
+data_root:   'AA-CLIP/data/MedAD/Brain_AD'    # 相对本仓库上一级;改成你自己的数据路径
+meta_path:   'PA-CLIP-F/dataset/metadata/brain.jsonl'   # 相对本仓库上一级;若本仓库改名请同步修改
+cache_dir:   'caches_brain'
+
+# ---- 切分 ----
+# support44: 官方 valid 的 44 张异常全部进支持集(pool);val 只留 39 张 good。
+# 超参用 11 个 Ungood 病例留一交叉验证; leftover 39 张 valid 正常只作 CV 负例
+# (不进原型 / Memory / 训练)。test 3715 只评一次。
+brain_split: support44
+val_cases:  []
+test_cases: []
+
+# ---- 特征提取(与 PA-CLIP 一致)----
+image_size: 224             # ViT-B/16 原生 → 14x14 = 196 patch
+patch_layers: [3, 6, 9, 11]
+eval_size: 240            # BMAD Brain 原生 240x240
+
+# ---- 文本锚点(与 PA-CLIP 一致)----
+class_templates:
+  normal: ['a brain MRI scan']
+  tumor: ['a brain MRI scan with tumor', 'a brain MRI scan with lesion']
+
+# ---- 原型构建 ----
+seed: 111
+normal_proto_k: 6
+kmeans_n_init: 10           # 10 = 对齐 PA-CLIP;全量 pool 抽样后 3 也够,但 10 更稳
+# PA-CLIP 的注释声称正常 patch 池包含"异常切片 mask 外的 patch",但代码里没有。
+# 默认 false = 复现 PA-CLIP 的实际行为;打开则补上注释承诺的部分。
+normal_pool_include_lesion_outside: false
+# 主协议:few_shot = 40 正常(seed=111 从 7500 抽) + 44 异常。full_pool 只许当消融。
+proto_source: 'few_shot'
+few_shot_normal: 40
+few_shot_anomaly: 44          # 官方 valid Ungood 全部;不要写 30
+proto_augment_epoch: 10     # 原型构建时的增强次数(仅对 few_shot 来源);1 = 关闭
+double_norm: false          # false = 逐位复现 PA-CLIP 的原型(已验证 cos=1.0000)
+                            # true  = 补上 Proto-Adapter 表 3 的 channel-wise 归一化
+                            #         实测会把原型间余弦从 0.35~0.87 拉到 0.03~0.69
+                            #         (论文是在 1000 类上验证的,这里 K+1=7,作为消融轴)
+
+# ---- paclip 口径复现所需的原始超参(仅用于对齐基线,不参与 ours 口径)----
+anomaly_tau: 2.0            # 注意:对图像级分数是空操作(见 signals.py 顶部说明)
+attn_temp: 1.0              # 注意力 softmax 温度
+
+# ---- Stage 0:基线复现与免费改进 ----
+# 图像级分数用哪个统计量:
+#   'raw_max'    → max(s) 原始值        ← 推荐,实测 AUC 0.754
+#   'zscore_max' → max(sigmoid(2z))     ← PA-CLIP 现状,实测 AUC 0.638
+# 根因:max(sigmoid(τz)) ≡ sigmoid(τ·max(z)),而 max(z)=(max(s)−mean(s))/std(s),
+#       图内 std 各不相同 → 跨图标定被摧毁。anomaly_tau 对图像级分数是空操作。
+score_mode: 'raw_max'
+q_img: 3                    # 图像级分数用 top-q 均值(q=1 即 max);固定超参,不在 test 上调
+smooth_kernel: 0            # 评分之前在 14x14 上做 k×k 平均池化;0 = 关闭
+                            # 脑病灶只有几个 patch,平滑会把峰值稀释进背景,默认关掉。
+
+# ---- Stage 1:角空间分类适配器(冻结原型)----
+# 主结果必须 few_shot(40+44)。full = 7500 正常监督,只能当对照行。
+train_scope: 'few_shot'
+margin: 0.2                 # ArcFace 角度间隔,扫 {0.1, 0.2, 0.3}
+arcface_scale: 32.0         # 训练时 ArcFace logits 放大;推理见 adapter_logit_scale
+adapter_logit_scale: 100.0  # 与 CLIP 头对齐,避免 α 靠网格硬补余弦 vs ×100
+stage1_lr: 1.0e-3
+stage1_lr_min: 1.0e-5
+stage1_epochs: 20
+stage1_batch: 16            # 支持集只有 84 张;84 会让每个 epoch 只更新 1 次
+beta_lesion: 1.0            # 病灶路 loss 权重
+ortho_weight: 0.0           # (W0·W1)^2 正交项;默认 0(与 channel-wise 归一化目标对冲)
+patience: 5
+# 症例 CV 每折只有约 4 张异常,patience 会在 epoch 0 停住。few-shot 关掉折内早停,训满 epoch。
+cv_early_stop: false
+# 主表 mean±std 走这组种子(few-shot 抽样 + K-means + 训练)。
+# 单次调试: python main_f.py ... --seed 111
+seeds: [111, 222, 333, 444, 555]
+
+# ---- Stage 2:解冻原型 + 定位损失 ----
+stage2_lr_proto: 5.0e-4
+stage2_lr_adapter: 1.0e-4
+stage2_epochs: 40           # 与原先 20:40 比例一致;batch=16 时约 5 step/epoch
+stage2_batch: 16
+reduce: 'max'               # 必须与推理 heatmap_exact 一致;lse 只当单独消融
+lse_tau: 0.1
+q_max: 5                    # 病灶内取 top-q 的 q 上限(按 mask 面积自适应)
+q_bar: 3                    # 正常切片 / 空 mask 切片用固定 q̄
+loc_b: 0.0                  # 绝对零点:s = 0 即"到病灶锚点与到最近正常锚点等距"
+loc_delta_r: 1.0            # σ 单位的图内排序间隔要求
+loc_delta_a: 0.05           # 原始 cos 单位的绝对标定要求
+loc_w_abs: 0.5              # 绝对项权重
+lam_loc: 1.0                # L_abnormal 权重
+alpha_cls: 1.0              # Stage 2 里 L_cls 的权重
+mask_empty_to_normal: true  # 空 mask(15.7%)从 L_abnormal 移到 L_normal
+lesion_source: 'gt_mask'    # gt_mask | heatmap_topq(训练时也用热力图选 patch)
+q_sel: 3                    # 病灶特征池化取 top-q(推理时)
+
+# ---- 融合搜索 ----
+alpha_pt_grid: [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0]
+lam_pt_grid:   [0.0, 0.25, 0.5, 1.0, 2.0]
+heatmap_fuse_grid: [0.0, 0.25, 0.5, 0.75, 1.0]
+heatmap_min_w: {mem: 0.25}  # 禁止把 Memory 搜成 0;基线 fused hit@1 靠它
+use_memory_bank: true
+
+# ---- 文本侧(三层提示词 + Residual Adapter)----
+text:
+  enable: true
+  train_scope: few_shot     # 正常只从 40 张抽;full 只能当消融
+  bottleneck: 256
+  lambda_t: 0.08
+  scale: 20.0
+  m_dis: 0.3
+  delta_div: 0.5
+  lam_p: 1.0
+  lam_d: 0.5
+  lam_r: 0.5
+  lam_v: 0.2
+  lr: 1.0e-3
+  epochs: 80                # 与原先 20:40:80 比例一致;batch=16 时约 5 step/epoch
+  batch: 16                 # 40+44;异常在 batch 内过采样
+
+text_prompts:
+  global:
+    normal:
+      - 'a brain MRI scan'
+      - 'a normal brain MRI'
+    anomaly:
+      - 'a brain MRI scan with tumor'
+      - 'an abnormal brain MRI'
+  attribute:
+    - name: signal
+      normal: ['a brain MRI with homogeneous signal']
+      anomaly: ['a brain MRI with abnormal signal']
+    - name: symmetry
+      normal: ['a symmetric brain MRI']
+      anomaly: ['an asymmetric brain MRI']
+    - name: focus
+      normal: ['a brain MRI without focal lesion']
+      anomaly: ['a brain MRI with a focal lesion']
+    - name: morphology
+      normal: ['a brain MRI with normal morphology']
+      anomaly: ['a brain MRI with abnormal morphology']
+  lesion:
+    normal:
+      - 'normal brain tissue'
+      - 'healthy brain parenchyma'
+    anomaly:
+      - 'tumor region'
+      - 'lesion area'
