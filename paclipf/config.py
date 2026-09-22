@@ -1,7 +1,11 @@
 """配置加载 + 派生量校验。
 
-约定:所有相对路径(如 cache_dir)都相对 **PA-CLIP-F 根目录** 解析,
-不依赖当前工作目录 —— 这样从任何 cwd 调用结果都一致。
+约定:
+  cache_dir / results_dir —— 相对 **本仓库根目录** 解析
+  meta_path              —— 相对 **本仓库根目录** 解析(元数据随仓库提供)
+  data_root              —— 相对 **本仓库的上一级目录** 解析(数据自备,通常放在仓库外)
+
+不依赖当前工作目录 —— 这样从任何 cwd 调用、仓库改成任何文件夹名结果都一致。
 """
 import os
 from pathlib import Path
@@ -9,8 +13,8 @@ from types import SimpleNamespace
 
 import yaml
 
-PKG_ROOT = Path(__file__).resolve().parents[1]          # PA-CLIP-F
-PROJECT_ROOT = PKG_ROOT.parent                          # 小样本原型学习
+PKG_ROOT = Path(__file__).resolve().parents[1]          # 本仓库根目录
+PROJECT_ROOT = PKG_ROOT.parent                          # 上一级目录(放数据用)
 
 
 def _abs(p, base=PKG_ROOT):
@@ -29,9 +33,12 @@ def load(config_path):
 
     cfg["cache_dir"] = str(_abs(cfg.get("cache_dir", "caches")))
     cfg["results_dir"] = str(_abs(cfg.get("results_dir", "results")))
-    for k in ("data_root", "meta_path"):
-        if cfg.get(k):
-            cfg[k] = str(_abs(cfg[k], PROJECT_ROOT))
+    # meta_path 随仓库分发 → 按 PKG_ROOT 解析,仓库文件夹叫什么名都不影响。
+    # data_root 是外部数据 → 按上一级目录解析。
+    if cfg.get("meta_path"):
+        cfg["meta_path"] = str(_abs(cfg["meta_path"], PKG_ROOT))
+    if cfg.get("data_root"):
+        cfg["data_root"] = str(_abs(cfg["data_root"], PROJECT_ROOT))
 
     if "text" in cfg and isinstance(cfg["text"], dict):
         cfg["text"] = SimpleNamespace(**cfg["text"])

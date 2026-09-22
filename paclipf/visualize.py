@@ -227,11 +227,11 @@ def render_maps(cfg, entries, labels, maps, out_path,
     return out_path, canvas.shape
 
 
-def render_single(cfg, entries, labels, hm, out_path, title="PA-CLIP-F",
+def render_single(cfg, entries, labels, hm, out_path, title="PA-CLIP",
                   n_anom=6, n_norm=2, seed=0, s_flat=None):
     """三列拼图:原图 | GT mask(原始分辨率) | 预测热图.
 
-    供 PA-CLIP-F 单独出图(不与其他方法并排)。切片为固定种子随机抽样,
+    供 PA-CLIP 单独出图(不与其他方法并排)。切片为固定种子随机抽样,
     行标签标注 hit@1 命中与否(含漏检),避免选择性展示。
     """
     size = cfg.eval_size

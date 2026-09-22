@@ -1,4 +1,4 @@
-# PA-CLIP-F
+# PA-CLIP
 
 冻结 **BiomedCLIP** 的小样本医学异常检测。图像塔与文本塔全程冻结，只训很小的头：
 **文本 Residual Adapter + 多层 Patch Adapter + 角空间分类适配器 + 分层可学习原型**。
@@ -59,12 +59,14 @@ pip install -r requirements.txt
 
 BiomedCLIP 权重首次运行时自动下载（约 748 MB）。国内建议先 `export HF_ENDPOINT=https://hf-mirror.com`。
 
-**数据需要自备**（BMAD Brain 不在本仓库内）。`configs/brain_f.yaml` 里两条路径按**本仓库的上一级目录**解析：
+**数据需要自备**（BMAD Brain 不在本仓库内）。`configs/brain_f.yaml` 里两条路径：
 
 ```yaml
-data_root: 'AA-CLIP/data/MedAD/Brain_AD'              # 图像根目录,改成你自己的
-meta_path: 'PA-CLIP-F/dataset/metadata/brain.jsonl'   # 元数据;本仓库若改名请同步改
+data_root: 'AA-CLIP/data/MedAD/Brain_AD'    # 相对本仓库的上一级目录;改成你自己的
+meta_path: 'dataset/metadata/brain.jsonl'   # 相对本仓库根;随仓库提供
 ```
+
+`data_root` 相对**本仓库的上一级目录**解析（数据通常放在仓库外），`meta_path` / `cache_dir` / `results_dir` 相对**本仓库根**解析 —— 所以仓库文件夹叫什么名字都不影响。
 
 元数据 `dataset/metadata/brain.jsonl` 随仓库提供（11298 行，字段 `image_path / label / class_name / split`）。
 

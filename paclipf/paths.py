@@ -1,6 +1,6 @@
 """路径引导:注册本项目自带的 open_clip。
 
-PA-CLIP-F 自带一份 vendored 的 open_clip(加载 BiomedCLIP 所需),不依赖任何
+PA-CLIP 自带一份 vendored 的 open_clip(加载 BiomedCLIP 所需),不依赖任何
 外部项目、也不回退到 site-packages 里的同名包 —— 与方法独立、可复现的定位一致。
 
 本模块必须在任何 `open_clip` 的 import 之前执行,因此 paclipf/__init__.py
@@ -9,7 +9,7 @@ PA-CLIP-F 自带一份 vendored 的 open_clip(加载 BiomedCLIP 所需),不依�
 import sys
 from pathlib import Path
 
-# paclipf/paths.py -> paclipf -> PA-CLIP-F
+# paclipf/paths.py -> paclipf -> PA-CLIP
 PKG_ROOT = Path(__file__).resolve().parents[1]
 OPEN_CLIP_DIR = PKG_ROOT / "open_clip"
 

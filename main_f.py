@@ -1,4 +1,4 @@
-"""PA-CLIP-F: Prototype-Anchored Localization with a Fine-tuned Angular-Space Adapter.
+"""PA-CLIP: Prototype-Anchored Localization with a Fine-tuned Angular-Space Adapter.
 
 Pipeline
   1) few-shot normal/anomaly slices -> normal prototypes (K-means) + anomaly prototype
@@ -535,9 +535,9 @@ def stage_visualize(cfg, device):
 
 # --------------------------------------------------------------------------- #
 def stage_visualize_ft(cfg, device):
-    """PA-CLIP-F 单独出图:原图 | GT mask | 本方法的热图(Stage 2 学到的原型)。
+    """PA-CLIP 单独出图:原图 | GT mask | 本方法的热图(Stage 2 学到的原型)。
 
-    不与其他方法并排 —— 只呈现 PA-CLIP-F 自身的结果。切片固定种子随机抽样,
+    不与其他方法并排 —— 只呈现 PA-CLIP 自身的结果。切片固定种子随机抽样,
     行标签标注 hit@1 (含漏检)。
     """
     from pathlib import Path
@@ -567,7 +567,7 @@ def stage_visualize_ft(cfg, device):
 
     out = Path(cfg.results_dir).parent / "visualize"
     p, shape = VZ.render_single(cfg, entries, y, hm, out / "paclip_f_heatmaps.png",
-                                title="PA-CLIP-F", n_anom=6, n_norm=2, seed=0,
+                                title="PA-CLIP", n_anom=6, n_norm=2, seed=0,
                                 s_flat=s_flat)
     print(f"[viz] {p}  {shape[1]}x{shape[0]}")
     return [(p, shape)]

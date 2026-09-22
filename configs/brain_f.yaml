@@ -1,13 +1,14 @@
 # ============================================================
-# PA-CLIP-F / BMAD Brain (BraTS2021 slices)
+# PA-CLIP / BMAD Brain (BraTS2021 slices)
 # 切分沿用 BMAD 官方划分(train / valid / test),与免训练基线严格可比。
 # ============================================================
 
 # ---- 路径 ----
-# data_root / meta_path 相对**本仓库的上一级目录**解析(config.py 里 base=PROJECT_ROOT);
-# cache_dir / results_dir 相对**本仓库自己**解析。改成你自己的路径即可。
-data_root:   'AA-CLIP/data/MedAD/Brain_AD'              # 图像根目录
-meta_path:   'PA-CLIP-F/dataset/metadata/brain.jsonl'   # 元数据;本仓库若改名请同步改
+# data_root      相对**本仓库的上一级目录**解析 —— 数据自备,通常放在仓库外
+# meta_path      相对**本仓库根目录**解析 —— 元数据随仓库提供,仓库改什么名都不影响
+# cache_dir / results_dir  相对**本仓库根目录**解析
+data_root:   'AA-CLIP/data/MedAD/Brain_AD'      # 图像根目录,改成你自己的
+meta_path:   'dataset/metadata/brain.jsonl'     # 随仓库提供
 cache_dir:   'caches_brain'
 
 # ---- 切分 ----

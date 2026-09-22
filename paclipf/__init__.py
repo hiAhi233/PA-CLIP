@@ -1,4 +1,4 @@
-"""PA-CLIP-F: Prototype-Anchored Localization with a Fine-tuned Angular-Space Adapter.
+"""PA-CLIP: Prototype-Anchored Localization with a Fine-tuned Angular-Space Adapter.
 
 Self-contained package -- no dependency on any sibling project. BiomedCLIP is loaded
 through the vendored `open_clip/` that ships with this repository.
