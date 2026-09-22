@@ -205,15 +205,21 @@ def evaluate_model(cfg, ctx, ad_img, ad_les, tag, c_norm=None, c_anom=None, rows
     c_norm = ctx["c_norm"] if c_norm is None else c_norm
     c_anom = ctx["c_anom"] if c_anom is None else c_anom
     hp = dict(ctx.get("hp") or {})
-    if hp.get("fuse_w") is None and ctx.get("fuse_w") is not None:
-        hp["fuse_w"] = ctx["fuse_w"]
+    spatial = hp.get("map_fuse") == "spatial" or ctx.get("spatial_gate") is not None
+    if spatial:
+        hp["fuse_w"] = None
+        ctx["fuse_w"] = None
+    else:
+        if hp.get("fuse_w") is None and ctx.get("fuse_w") is not None:
+            hp["fuse_w"] = ctx["fuse_w"]
+        if hp.get("fuse_w") is not None:
+            ctx["fuse_w"] = hp["fuse_w"]
     if hp.get("fuse_alpha") is None and ctx.get("fuse_alpha") is not None:
         hp["fuse_alpha"] = ctx["fuse_alpha"]
-    if hp.get("fuse_w") is not None:
-        ctx["fuse_w"] = hp["fuse_w"]
     scale = float(getattr(cfg, "adapter_logit_scale", 100.0))
 
-    missing_fuse = hp.get("fuse_w") is None or hp.get("fuse_alpha") is None
+    has_map = hp.get("fuse_w") is not None or ctx.get("spatial_gate") is not None
+    missing_fuse = (not has_map) or hp.get("fuse_alpha") is None
     missing_pt = ad_img is not None and "alpha_pt" not in hp
     oof = None
     if cv.uses_case_cv(ctx) and (missing_fuse or missing_pt):
@@ -309,6 +315,7 @@ def evaluate_model(cfg, ctx, ad_img, ad_les, tag, c_norm=None, c_anom=None, rows
     rep = evaluate.full_report(cfg, st_rep, ctx["test"]["label"], ctx["entries"][2],
                                hm_for_pixel=hm_px, tau=cfg.anomaly_tau)
     out.update({k: v for k, v in rep.items() if not k.startswith("_")})
+    _add_mask_metrics(cfg, ctx, hm_px, ctx["entries"][2], ctx["test"]["label"], out)
     out["_sig"] = st
     if rows is not None:
         rows.append((tag, {k: v for k, v in out.items() if not k.startswith("_")}))
@@ -336,6 +343,29 @@ def _append_map_rows(cfg, ctx, st, yt, rows, prefix=""):
                                    hm_for_pixel=st[hk], tau=cfg.anomaly_tau)
         rows.append((f"{prefix} {name}".strip(),
                      {k: v for k, v in rep.items() if not k.startswith("_")}))
+
+
+def _add_mask_metrics(cfg, ctx, hm14, entries, labels, out):
+    """OOF 选出的 τ 在 test、eval_size 上算 Dice/IoU。与 search_tau_eval 同一套后处理。"""
+    from paclipf import postprocess as PP
+
+    if not PP.enabled(cfg):
+        return
+    tau = float((ctx.get("hp") or {}).get("post_tau", ctx.get("post_tau", 0.5)))
+    pack = PP.apply_maps(hm14, cfg, tau=tau, entries=entries)
+    yt = fusion.to_np(labels)
+    idx = np.where(yt > 0)[0]
+    masks = evaluate.load_masks_px([entries[i] for i in idx], cfg)
+    ds, ious = [], []
+    for j, i in enumerate(idx):
+        if masks[j] is None:
+            continue
+        ds.append(PP.dice(pack["mask"][i], masks[j]))
+        ious.append(PP.iou(pack["mask"][i], masks[j]))
+    if ds:
+        out["mask_dice"] = float(np.mean(ds))
+        out["mask_iou"] = float(np.mean(ious))
+    out["post_tau"] = tau
 
 
 def _save_train_rows(cfg, stage, rows, s1=None, s2=None):
@@ -422,8 +452,13 @@ def stage_visualize(cfg, device):
     from paclipf import visualize as VZ
 
     ctx = pipeline.prepare(cfg, device)
+    c_n0, c_a0 = ctx["c_norm"].detach().clone(), ctx["c_anom"].detach().clone()
+    patch_raw = ctx["test"]["patch"]
+    train.restore_visual(cfg, ctx, "stage2")
     entries, y = ctx["entries"][2], ctx["test"]["label"]
-    hm0 = HM2.heatmap_exact(ctx["test"]["patch"], ctx["c_anom"], ctx["c_norm"],
+    from paclipf import patch_adapter as PA
+    # 免训练基线：冻结原型 + 原始 patch，不用训过的 adapter
+    hm0 = HM2.heatmap_exact(patch_raw, c_a0, c_n0,
                             tuple(cfg.patch_layers), image_size=cfg.image_size, smooth_kernel=0)
     s_flat = hm0.reshape(len(y), -1)
     out = Path(cfg.results_dir).parent / "visualize"
@@ -446,20 +481,51 @@ def stage_visualize(cfg, device):
         proto = PR.LearnablePrototypes(ctx["c_norm"], ctx["c_anom"], cfg.double_norm)
         proto.load_state_dict(st2["proto"])
         c2n, c2a = proto.normalized()
-        hm2 = HM2.heatmap_exact(ctx["test"]["patch"], c2a, c2n, tuple(cfg.patch_layers),
-                                image_size=cfg.image_size, smooth_kernel=0)
-        drift = 1.0 - float(c2a @ ctx["c_anom"])
-        print(f"[viz] Stage2 原型相对初始的漂移 1-cos = {drift:.3f} "
+        pad1 = None
+        if st1.get("patch_ad"):
+            pad1 = PA.from_cfg(cfg, int(PR.feat_dim(c_n0)), device)
+            if pad1 is not None:
+                pad1.load_state_dict(st1["patch_ad"])
+                pad1.eval()
+        hm1 = HM2.heatmap_exact(
+            PA.apply(pad1, patch_raw), c_a0, c_n0,
+            tuple(cfg.patch_layers), image_size=cfg.image_size, smooth_kernel=0)
+        hm2 = HM2.heatmap_exact(
+            PA.apply(ctx.get("patch_adapter"), patch_raw), c2a, c2n,
+            tuple(cfg.patch_layers), image_size=cfg.image_size, smooth_kernel=0)
+        drift = proto.drift(c_n0, c_a0)
+        print(f"[viz] Stage2 原型相对初始的漂移 1-cos  "
+              f"n={drift['drift_norm']:.3f} a={drift['drift_anom']:.3f} "
               f"(0=没动, 1=正交)")
         p, shape = VZ.render(
-            cfg, entries, y, hm0, hm2, out / "compare_stage1_vs_stage2.png",
+            cfg, entries, y, hm1, hm2, out / "compare_stage1_vs_stage2.png",
             left_title="Stage1 (prototypes frozen)", right_title="Stage2 (prototypes learned)",
             n_anom=6, n_norm=2, seed=0,
-            s_flat=hm2.reshape(len(y), -1), s_flat_left=hm0.reshape(len(y), -1))
+            s_flat=hm2.reshape(len(y), -1), s_flat_left=hm1.reshape(len(y), -1))
         outs.append((p, shape))
         print(f"[viz] {p.name}  {shape[1]}x{shape[0]}  (Stage1 vs Stage2)")
     else:
         print("[viz] 未找到 stage1/stage2 权重,跳过对照(先跑 --stage stage2)")
+
+    st_sig = SG.compute_ctx(cfg, ctx["test"], ctx)
+    maps = {"proto": st_sig["hm"]}
+    if "hm_text" in st_sig:
+        maps["text"] = st_sig["hm_text"]
+    if "hm_mem" in st_sig:
+        maps["mem"] = st_sig["hm_mem"]
+    if "hm_fused" in st_sig:
+        maps["fused"] = st_sig["hm_fused"]
+    from paclipf import postprocess as PP
+    if PP.enabled(cfg) and "fused" in maps:
+        tau = float((ctx.get("hp") or {}).get("post_tau", ctx.get("post_tau", 0.5)))
+        maps["mask"] = PP.apply_maps(maps["fused"], cfg, tau=tau, entries=entries)["mask"]
+    if len(maps) > 1:
+        p, shape = VZ.render_maps(
+            cfg, entries, y, maps, out / "pipeline_maps.png",
+            n_anom=6, n_norm=2, seed=0,
+            s_flat=st_sig.get("s_flat_fused", st_sig["s_flat"]))
+        outs.append((p, shape))
+        print(f"[viz] {p.name}  {shape[1]}x{shape[0]}  (proto/text/mem/fused/mask)")
 
     print(f"\n[viz] 输出目录 {out}")
     print("[viz] 切片为固定种子(seed=0)随机抽样,不是挑好看的;")
@@ -481,6 +547,7 @@ def stage_visualize_ft(cfg, device):
     from paclipf import visualize as VZ
 
     ctx = pipeline.prepare(cfg, device)
+    train.restore_visual(cfg, ctx, "stage2")
     entries, y = ctx["entries"][2], ctx["test"]["label"]
 
     st2 = train.load_state(cfg, "stage2")
@@ -491,7 +558,10 @@ def stage_visualize_ft(cfg, device):
     proto = PR.LearnablePrototypes(ctx["c_norm"], ctx["c_anom"], cfg.double_norm)
     proto.load_state_dict(st2["proto"])
     c_n, c_a = proto.normalized()
-    hm = HM2.heatmap_exact(ctx["test"]["patch"], c_a, c_n, tuple(cfg.patch_layers),
+    ctx["c_norm"], ctx["c_anom"] = c_n, c_a
+    from paclipf import patch_adapter as PA
+    patch = PA.apply(ctx.get("patch_adapter"), ctx["test"]["patch"])
+    hm = HM2.heatmap_exact(patch, c_a, c_n, tuple(cfg.patch_layers),
                            image_size=cfg.image_size, smooth_kernel=cfg.smooth_kernel)
     s_flat = hm.reshape(len(y), -1)
 
@@ -581,7 +651,8 @@ def _lite_out(out):
         return out
     keep = {}
     for k, v in out.items():
-        if k in ("ctx", "stage1", "stage2", "adapter", "pack", "ad_img", "ad_les", "proto"):
+        if k in ("ctx", "stage1", "stage2", "adapter", "pack", "ad_img", "ad_les", "proto",
+                 "patch_ad", "spatial_gate"):
             continue
         if k in ("text", "train") and isinstance(v, dict):
             keep[k] = {"rows": v.get("rows")}

@@ -31,10 +31,14 @@ IDX_NORMAL, IDX_ANOMALY = 0, 1
 
 @torch.no_grad()
 def compute(cfg, split_data, c_norm, c_anom, w_text, adapter_img=None, adapter_lesion=None,
-            text_pack=None, memory=None, fuse_w=None, text_sign=1.0):
+            text_pack=None, memory=None, fuse_w=None, text_sign=1.0,
+            patch_adapter=None, spatial_gate=None):
     """split_data: cache.load() 的返回值(需含 cls 与 4 层 patch)。"""
+    from . import patch_adapter as PA
+    from .grid import nested
+
     layers = tuple(cfg.patch_layers)
-    patch = split_data["patch"]
+    patch = PA.apply(patch_adapter, split_data["patch"])
     f_cls = split_data["cls"]
     patch_l11 = patch[layers[-1]]
 
@@ -91,12 +95,21 @@ def compute(cfg, split_data, c_norm, c_anom, w_text, adapter_img=None, adapter_l
 
     # ---------- A_text / A_mem / 融合热力图 ----------
     if text_pack is not None:
-        hm_text = float(text_sign) * text_heatmap(patch, text_pack, layers, cfg.image_size)
+        attr_w = float(nested(cfg, "text", "attr_w", getattr(cfg, "text_attr_w", 0.5)))
+        hm_text = float(text_sign) * text_heatmap(
+            patch, text_pack, layers, cfg.image_size, attr_w=attr_w)
         out["hm_text"] = hm_text
         out["S_heat_text"] = hm_text.reshape(hm_text.shape[0], -1).topk(q, dim=-1).values.mean(-1)
+        s_attr = attr_cls_score(f_cls, text_pack)
+        if s_attr is not None:
+            out["S_attr"] = s_attr
     if memory is not None:
         last = (layers[-1],)
-        hm_mem = memory_heatmap({layers[-1]: patch[layers[-1]]}, memory, last, cfg.image_size)
+        sigma = float(nested(cfg, "memory", "pos_sigma", getattr(cfg, "memory_pos_sigma", 1.0)))
+        pos_aware = bool(nested(cfg, "memory", "pos_aware", getattr(cfg, "memory_pos_aware", True)))
+        hm_mem = memory_heatmap(
+            {layers[-1]: patch[layers[-1]]}, memory, last, cfg.image_size,
+            pos_sigma=sigma, pos_aware=pos_aware)
         out["hm_mem"] = hm_mem
         out["S_heat_mem"] = hm_mem.reshape(hm_mem.shape[0], -1).topk(q, dim=-1).values.mean(-1)
 
@@ -105,41 +118,100 @@ def compute(cfg, split_data, c_norm, c_anom, w_text, adapter_img=None, adapter_l
         maps["text"] = out["hm_text"]
     if "hm_mem" in out:
         maps["mem"] = out["hm_mem"]
-    if fuse_w is not None and len(maps) > 1:
-        hm_f = fuse_maps(maps, fuse_w)
-        out["hm_fused"] = hm_f
-        out["s_flat_fused"] = hm_f.reshape(hm_f.shape[0], -1)
-        out["S_heat_fused"] = out["s_flat_fused"].topk(q, dim=-1).values.mean(-1)
+    if len(maps) > 1:
+        if spatial_gate is not None:
+            hm_f = spatial_gate.fuse(maps)
+        elif fuse_w is not None:
+            hm_f = fuse_maps(maps, fuse_w)
+        else:
+            hm_f = None
+        if hm_f is not None:
+            out["hm_fused"] = hm_f
+            out["s_flat_fused"] = hm_f.reshape(hm_f.shape[0], -1)
+            out["S_heat_fused"] = out["s_flat_fused"].topk(q, dim=-1).values.mean(-1)
     return out
 
 
-def text_heatmap(patch_dict, pack, layers, image_size=224):
-    """A_text(p) = sim(p, t_lesion^A) - sim(p, t_lesion^N), 多层平均。"""
+def text_heatmap(patch_dict, pack, layers, image_size=224, attr_w=0.5):
+    """A_text = (1-w) A_lesion + w mean_k A_attr_k。属性层独立匹配再融合。"""
+    H = image_size // 16
+    lesion = _pair_map(patch_dict, pack["t_lesion"][0], pack["t_lesion"][1], layers, H)
+    w = float(attr_w)
+    if w <= 0 or "t_attr_a" not in pack:
+        return lesion
+    attr = attr_heatmap(patch_dict, pack, layers, image_size)
+    return (1.0 - w) * lesion + w * attr
+
+
+def attr_heatmap(patch_dict, pack, layers, image_size=224):
+    """每个属性 k: sim(p, t_k^A) - sim(p, t_k^N)，再对 k 平均。"""
     import torch.nn.functional as F
-    t_n = F.normalize(pack["t_lesion"][0].float(), dim=-1)
-    t_a = F.normalize(pack["t_lesion"][1].float(), dim=-1)
+    t_n = F.normalize(pack["t_attr_n"].float(), dim=-1)
+    t_a = F.normalize(pack["t_attr_a"].float(), dim=-1)
     H = image_size // 16
     maps = []
     for l in layers:
         f = F.normalize(patch_dict[l].float(), dim=-1)
-        s = f @ t_a - f @ t_n
+        s = (f @ t_a.t() - f @ t_n.t()).mean(-1)
         maps.append(s.view(-1, H, H))
     return torch.stack(maps, 0).mean(0)
 
 
-def memory_heatmap(patch_dict, memory, layers, image_size=224, chunk=256):
-    """A_mem(p) = max_a sim(p, m_a) - max_n sim(p, m_n)。分块以免 (N,L,M) 爆显存。"""
+def _pair_map(patch_dict, t_n, t_a, layers, H):
     import torch.nn.functional as F
+    tn = F.normalize(t_n.float(), dim=-1)
+    ta = F.normalize(t_a.float(), dim=-1)
+    maps = []
+    for l in layers:
+        f = F.normalize(patch_dict[l].float(), dim=-1)
+        maps.append((f @ ta - f @ tn).view(-1, H, H))
+    return torch.stack(maps, 0).mean(0)
+
+
+def attr_cls_score(f_cls, pack, scale=20.0):
+    """每个属性用 CLS 对 (t_k^N, t_k^A) 出一路异常分，再对 k 平均。"""
+    import torch.nn.functional as F
+    if pack is None or "t_attr_a" not in pack:
+        return None
+    f = F.normalize(f_cls.float(), dim=-1)
+    t_n = F.normalize(pack["t_attr_n"].float(), dim=-1)
+    t_a = F.normalize(pack["t_attr_a"].float(), dim=-1)
+    logits = scale * torch.stack([f @ t_n.t(), f @ t_a.t()], dim=-1)  # (N,K,2)
+    p_n = torch.softmax(logits, dim=-1)[..., 0]
+    return 1.0 - p_n.mean(-1)
+
+
+def memory_heatmap(patch_dict, memory, layers, image_size=224, chunk=256,
+                   pos_sigma=1.0, pos_aware=True):
+    """A_mem(p) = max_a sim(p,m_a) - max_n sim(p,m_n)。
+
+    位置感知: sim = cos(f,m) * exp(-||p_q-p_m||^2 / 2σ^2)，σ 以格距为单位。
+    无坐标的旧 memory dict 自动退回纯外观匹配。
+    """
+    import torch.nn.functional as F
+    from .grid import patch_xy
+
     a_mem = F.normalize(memory["a"].float(), dim=-1)
     n_mem = F.normalize(memory["n"].float(), dim=-1)
     H = image_size // 16
+    use_pos = bool(pos_aware) and ("a_pos" in memory) and ("n_pos" in memory)
+    xy = patch_xy(H, device=a_mem.device, dtype=a_mem.dtype)
+    sigma = float(pos_sigma) / float(H)
+    inv = 1.0 / (2.0 * sigma * sigma + 1e-12) if use_pos else None
+    a_pos = memory["a_pos"].to(device=a_mem.device, dtype=a_mem.dtype) if use_pos else None
+    n_pos = memory["n_pos"].to(device=n_mem.device, dtype=n_mem.dtype) if use_pos else None
 
-    def _maxsim(f, mem):
+    def _maxsim(f, mem, pos_m):
         n, l, d = f.shape
         flat = f.reshape(-1, d)
+        pq = xy.unsqueeze(0).expand(n, -1, -1).reshape(-1, 2) if use_pos else None
         best = None
         for i in range(0, mem.shape[0], chunk):
             s = flat @ mem[i:i + chunk].t()
+            if use_pos:
+                pm = pos_m[i:i + chunk]
+                dist2 = (pq.unsqueeze(1) - pm.unsqueeze(0)).pow(2).sum(-1)
+                s = s * torch.exp(-dist2 * inv)
             m = s.max(-1).values
             best = m if best is None else torch.maximum(best, m)
         return best.view(n, l)
@@ -147,7 +219,7 @@ def memory_heatmap(patch_dict, memory, layers, image_size=224, chunk=256):
     maps = []
     for l in layers:
         f = F.normalize(patch_dict[l].float(), dim=-1)
-        maps.append((_maxsim(f, a_mem) - _maxsim(f, n_mem)).view(-1, H, H))
+        maps.append((_maxsim(f, a_mem, a_pos) - _maxsim(f, n_mem, n_pos)).view(-1, H, H))
     return torch.stack(maps, 0).mean(0)
 
 
@@ -208,4 +280,6 @@ def compute_ctx(cfg, split_data, ctx, c_norm=None, c_anom=None,
         memory=ctx.get("memory"),
         fuse_w=fw,
         text_sign=ctx.get("text_sign", 1.0),
+        patch_adapter=ctx.get("patch_adapter"),
+        spatial_gate=ctx.get("spatial_gate"),
     )

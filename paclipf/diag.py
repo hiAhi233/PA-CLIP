@@ -92,8 +92,9 @@ def proto_usage(patch_l11, c_norm):
     此时应把 reduce 从 'max' 换成 'lse'(软化),或减少 k。
     """
     with torch.no_grad():
-        k = c_norm.shape[1]
-        sim = patch_l11 @ c_norm                                  # (N,196,K)
+        cn = c_norm[-1] if c_norm.dim() == 3 else c_norm
+        k = cn.shape[1]
+        sim = patch_l11 @ cn
         win = sim.argmax(-1).reshape(-1)
         cnt = torch.bincount(win, minlength=k).float()
         return (cnt / cnt.sum()).tolist()

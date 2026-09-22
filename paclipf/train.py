@@ -19,6 +19,50 @@ from . import lesion as LSN
 from . import signals as SG
 
 
+def restore_visual(cfg, ctx, which="stage2"):
+    """从 runs/*.pt 把 Patch Adapter / 空间门控 / τ 挂回 ctx。"""
+    st = load_state(cfg, which)
+    if not st:
+        return None
+    from . import patch_adapter as PA
+    from . import spatial as SP
+    from . import prototypes as PR
+
+    dim = int(PR.feat_dim(ctx["c_norm"]))
+    device = ctx["device"]
+    if st.get("proto"):
+        from . import prototypes as PR
+        proto = PR.LearnablePrototypes(
+            ctx["c_norm"].detach().cpu(), ctx["c_anom"].detach().cpu(),
+            getattr(cfg, "double_norm", False))
+        proto.load_state_dict(st["proto"])
+        cn, ca = proto.normalized()
+        ctx["c_norm"] = cn.to(device)
+        ctx["c_anom"] = ca.to(device)
+    if st.get("patch_ad"):
+        pad = PA.from_cfg(cfg, dim, device)
+        if pad is not None:
+            pad.load_state_dict(st["patch_ad"])
+            pad.eval()
+            ctx["patch_adapter"] = pad
+    if st.get("spatial_gate"):
+        gate = SP.from_cfg(cfg, device)
+        if gate is not None:
+            gate.load_state_dict(st["spatial_gate"])
+            gate.eval()
+            ctx["spatial_gate"] = gate
+    if st.get("post_tau") is not None:
+        ctx["post_tau"] = float(st["post_tau"])
+    hp = st.get("hp") or {}
+    if hp:
+        ctx["hp"] = {**(ctx.get("hp") or {}), **hp}
+        if hp.get("map_fuse") == "spatial" or st.get("spatial_gate"):
+            ctx["fuse_w"] = None
+        elif hp.get("fuse_w") is not None:
+            ctx["fuse_w"] = hp["fuse_w"]
+    return st
+
+
 def save_state(cfg, which, **tensors):
     """保存训练好的权重。
 
@@ -160,9 +204,22 @@ def _norm_anom_idx(idx, y):
     return idx[y[idx] == 0], idx[y[idx] == 1]
 
 
+def _copy_patch_ad(src, cfg, dim, device):
+    from . import patch_adapter as PA
+
+    if src is None:
+        return PA.from_cfg(cfg, dim, device)
+    ad = PA.from_cfg(cfg, dim, device)
+    if ad is None:
+        return None
+    ad.load_state_dict(src.state_dict())
+    return ad.to(device)
+
+
 def _run_stage1(cfg, ctx, device, f_cls_all, f_les_all, y_all, train_idx,
                 c_norm, c_anom, pi, eval_tgt=None, n_epochs=None, patience=None,
-                rng=None, verbose=False, tag=""):
+                rng=None, verbose=False, tag="", patch_ad=None, patch_l11=None,
+                mask_all=None):
     """跑一轮 Stage1。eval_tgt 为 None 时训满 n_epochs,取最后一步。"""
     n_epochs = int(n_epochs if n_epochs is not None else cfg.stage1_epochs)
     patience = int(patience if patience is not None else (getattr(cfg, "patience", 0) or 0))
@@ -171,15 +228,21 @@ def _run_stage1(cfg, ctx, device, f_cls_all, f_les_all, y_all, train_idx,
         c_norm=c_norm, c_anom=c_anom, pi=pi)
     ad_img, ad_les = ad_img.to(device), ad_les.to(device)
     params = list(ad_img.parameters()) + list(ad_les.parameters())
+    if patch_ad is not None:
+        params = params + list(patch_ad.parameters())
+        ctx["patch_adapter"] = patch_ad
     opt = torch.optim.Adam(params, lr=cfg.stage1_lr, eps=1e-4)
     bs, per_epoch = _train_batch(len(train_idx), cfg.stage1_batch)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=max(1, n_epochs * per_epoch), eta_min=cfg.stage1_lr_min)
     n_idx, a_idx = _norm_anom_idx(train_idx, y_all)
+    q = max(1, int(getattr(cfg, "q_sel", 3)))
     best = {"auc_adapt": -1.0, "epoch": -1, "state": None, "wait": 0}
     hist = []
     for ep in range(n_epochs):
         ad_img.train(); ad_les.train()
+        if patch_ad is not None:
+            patch_ad.train()
         tot, nb = 0.0, 0
         for _ in range(per_epoch):
             if len(a_idx) and len(n_idx):
@@ -188,15 +251,23 @@ def _run_stage1(cfg, ctx, device, f_cls_all, f_les_all, y_all, train_idx,
                 b = train_idx[torch.randperm(len(train_idx), generator=rng, device=device)[:bs]]
             if len(b) < 2:
                 continue
+            if patch_ad is not None and patch_l11 is not None:
+                z = patch_ad(patch_l11[b])
+                f_les_b = make_lesion_features(z, mask_all[b], y_all[b], q, rng)
+            else:
+                f_les_b = f_les_all[b]
             loss = ad_img.loss(f_cls_all[b], y_all[b], cfg.margin, cfg.arcface_scale)
             loss = loss + cfg.beta_lesion * ad_les.loss(
-                f_les_all[b], y_all[b], cfg.margin, cfg.arcface_scale)
+                f_les_b, y_all[b], cfg.margin, cfg.arcface_scale)
             if getattr(cfg, "ortho_weight", 0.0) > 0:
                 loss = loss + cfg.ortho_weight * sum(
                     (a.unit_weight[0] * a.unit_weight[1]).sum() ** 2 for a in (ad_img, ad_les))
             opt.zero_grad(); loss.backward(); opt.step(); sched.step()
             tot += loss.item(); nb += 1
         ad_img.eval(); ad_les.eval()
+        if patch_ad is not None:
+            patch_ad.eval()
+            ctx["patch_adapter"] = patch_ad
         row = {"epoch": ep, "loss": tot / max(1, nb),
                "cos_img": ad_img.class_cos(), "cos_les": ad_les.class_cos()}
         if eval_tgt is not None:
@@ -204,8 +275,11 @@ def _run_stage1(cfg, ctx, device, f_cls_all, f_les_all, y_all, train_idx,
             row.update(met)
             improved = met["auc_adapt"] > best["auc_adapt"]
             if improved:
+                st = {"img": ad_img.state_dict(), "les": ad_les.state_dict()}
+                if patch_ad is not None:
+                    st["patch"] = copy.deepcopy(patch_ad.state_dict())
                 best = {"auc_adapt": met["auc_adapt"], "epoch": ep, "wait": 0,
-                        "state": copy.deepcopy({"img": ad_img.state_dict(), "les": ad_les.state_dict()})}
+                        "state": copy.deepcopy(st)}
             else:
                 best["wait"] = best.get("wait", 0) + 1
                 if patience and best["wait"] >= patience:
@@ -214,18 +288,22 @@ def _run_stage1(cfg, ctx, device, f_cls_all, f_les_all, y_all, train_idx,
                         print(f"  {tag}ep{ep:>3} early stop (patience={patience})")
                     break
         else:
+            st = {"img": ad_img.state_dict(), "les": ad_les.state_dict()}
+            if patch_ad is not None:
+                st["patch"] = copy.deepcopy(patch_ad.state_dict())
             best = {"auc_adapt": float("nan"), "epoch": ep, "wait": 0,
-                    "state": copy.deepcopy({"img": ad_img.state_dict(), "les": ad_les.state_dict()})}
+                    "state": copy.deepcopy(st)}
         hist.append(row)
         if verbose and (ep % 4 == 0 or ep == n_epochs - 1):
             extra = (f" val AUC {row.get('auc_adapt', float('nan')):.4f}"
                      if "auc_adapt" in row else "")
             print(f"  {tag}ep{ep:>3} loss {row['loss']:.4f}{extra} | cos {ad_img.class_cos():.3f}")
-    # 有 patience 才回滚到 val 最优;关掉早停时用最后一步,避免 4 张异常把 epoch 0 当最优。
     if patience and best["state"] is not None:
         ad_img.load_state_dict(best["state"]["img"])
         ad_les.load_state_dict(best["state"]["les"])
-    return ad_img, ad_les, hist, best
+        if patch_ad is not None and "patch" in best["state"]:
+            patch_ad.load_state_dict(best["state"]["patch"])
+    return ad_img, ad_les, hist, best, patch_ad
 
 
 def train_stage1(cfg, ctx, device="cuda", seed=None, verbose=True):
@@ -252,10 +330,19 @@ def train_stage1(cfg, ctx, device="cuda", seed=None, verbose=True):
 
     q = max(1, int(getattr(cfg, "q_sel", 3)))
     t0 = time.time()
+    from . import patch_adapter as PA
+    from .grid import nested as _nested
+
+    dim = int(f_cls_all.shape[-1])
+    keep_patch = bool(_nested(cfg, "patch_adapter", "enable", True))
+    mask_all = pool["mask14"].to(device).reshape(len(y_all), -1)
     f_les_all = make_lesion_features(patch_all, pool["mask14"].to(device), y_all, q, rng)
-    del patch_all
+    if not keep_patch:
+        del patch_all
+        patch_all = None
     if verbose:
-        print(f"[stage1] 病灶特征池化完成 {tuple(f_les_all.shape)} ({time.time()-t0:.1f}s)")
+        print(f"[stage1] 病灶特征池化完成 {tuple(f_les_all.shape)} ({time.time()-t0:.1f}s)"
+              f" | Patch Adapter={'开' if keep_patch else '关'}")
 
     fold_states = []
     if cv.uses_case_cv(ctx) and cfg.train_scope == "few_shot":
@@ -264,18 +351,21 @@ def train_stage1(cfg, ctx, device="cuda", seed=None, verbose=True):
             tr, ho = tr.to(device), ho.to(device)
             pr = cv.rebuild_proto(cfg, ctx, tr, device)
             tgt, _ = cv.fold_eval_split(cfg, ctx, ho, device)
+            pad = PA.from_cfg(cfg, dim, device)
             if verbose:
                 print(f"[stage1] fold hold {held}  train {len(tr)} / val {len(ho)}")
-            ad_img, ad_les, hist, best = _run_stage1(
+            ad_img, ad_les, hist, best, pad = _run_stage1(
                 cfg, ctx, device, f_cls_all, f_les_all, y_all, tr,
                 pr["c_norm"], pr["c_anom"], pr["pi"], eval_tgt=tgt,
                 patience=(cfg.patience if early else 0),
-                rng=rng, verbose=verbose, tag=f"{held} ")
+                rng=rng, verbose=verbose, tag=f"{held} ",
+                patch_ad=pad, patch_l11=patch_all, mask_all=mask_all)
             fold_best.append(best["epoch"] if best["epoch"] >= 0 else cfg.stage1_epochs - 1)
             fold_states.append({
                 "held": held, "epoch": best["epoch"],
                 "img": copy.deepcopy(ad_img.state_dict()),
                 "les": copy.deepcopy(ad_les.state_dict()),
+                "patch": copy.deepcopy(pad.state_dict()) if pad is not None else None,
                 "c_norm": pr["c_norm"].detach().cpu(),
                 "c_anom": pr["c_anom"].detach().cpu(),
                 "pi": pr["pi"].detach().cpu(),
@@ -288,21 +378,27 @@ def train_stage1(cfg, ctx, device="cuda", seed=None, verbose=True):
             best_ep = int(cfg.stage1_epochs)
         if verbose:
             print(f"[stage1] 症例 CV {'选' if early else '固定'} epoch={best_ep} (折内最优 {fold_best})")
-        ad_img, ad_les, hist, best = _run_stage1(
+        pad = PA.from_cfg(cfg, dim, device)
+        ad_img, ad_les, hist, best, pad = _run_stage1(
             cfg, ctx, device, f_cls_all, f_les_all, y_all, idx,
             ctx["c_norm"], ctx["c_anom"], ctx["pr"]["pi"],
             eval_tgt=None, n_epochs=best_ep, patience=0,
-            rng=rng, verbose=verbose, tag="final ")
+            rng=rng, verbose=verbose, tag="final ",
+            patch_ad=pad, patch_l11=patch_all, mask_all=mask_all)
         best["epoch"] = best_ep - 1
         by_held = {fs["held"]: fs for fs in fold_states}
 
         def _pf(held, tr, ho):
             st = by_held[held]
-            return {
+            extra = {
                 "adapter_img": _adapter_from_state(st["img"], device),
                 "adapter_lesion": _adapter_from_state(st["les"], device),
                 "c_norm": st["c_norm"].to(device), "c_anom": st["c_anom"].to(device),
             }
+            if st.get("patch") is not None:
+                extra["patch_adapter"] = _copy_patch_ad(None, cfg, dim, device)
+                extra["patch_adapter"].load_state_dict(st["patch"])
+            return extra
 
         hp, _ = cv.search_hparams_oof(
             cfg, ctx, per_fold=_pf, text_pack=ctx.get("text_pack"), verbose=verbose)
@@ -311,17 +407,21 @@ def train_stage1(cfg, ctx, device="cuda", seed=None, verbose=True):
         ctx["fuse_alpha"] = hp.get("fuse_alpha", ctx.get("fuse_alpha"))
     else:
         tgt_sel = ctx["val"] if not cv.uses_case_cv(ctx) else None
-        ad_img, ad_les, hist, best = _run_stage1(
+        pad = PA.from_cfg(cfg, dim, device)
+        ad_img, ad_les, hist, best, pad = _run_stage1(
             cfg, ctx, device, f_cls_all, f_les_all, y_all, idx,
             ctx["c_norm"], ctx["c_anom"], ctx["pr"]["pi"],
-            eval_tgt=tgt_sel, rng=rng, verbose=verbose)
+            eval_tgt=tgt_sel, rng=rng, verbose=verbose,
+            patch_ad=pad, patch_l11=patch_all, mask_all=mask_all)
         hp = {}
 
+    ctx["patch_adapter"] = pad
     if verbose:
         print(f"[stage1] 最优 epoch {best['epoch']} (val AUC {best.get('auc_adapt', float('nan')):.4f}),"
               f" 最终 cos img {ad_img.class_cos():.4f} / les {ad_les.class_cos():.4f}")
-    save_state(cfg, "stage1", ad_img=ad_img, ad_les=ad_les, fold_states=fold_states, hp=hp)
-    return {"ad_img": ad_img, "ad_les": ad_les, "hist": hist, "best": best,
+    save_state(cfg, "stage1", ad_img=ad_img, ad_les=ad_les, patch_ad=pad,
+               fold_states=fold_states, hp=hp)
+    return {"ad_img": ad_img, "ad_les": ad_les, "patch_ad": pad, "hist": hist, "best": best,
             "seed": seed, "fold_states": fold_states, "hp": hp}
 
 
@@ -354,8 +454,10 @@ def _copy_adapter(src, device):
 def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom_dev,
                 train_idx, ad_img, ad_les, c_norm_init, c_anom_init,
                 eval_tgt=None, m14v=None, n_epochs=None, patience=None,
-                rng=None, verbose=False, tag=""):
+                rng=None, verbose=False, tag="", patch_ad=None):
     from . import heatmap as HM, losses as LS, prototypes as PR
+    from . import patch_adapter as PA
+    from .grid import nested
 
     n_epochs = int(n_epochs if n_epochs is not None else cfg.stage2_epochs)
     patience = int(patience if patience is not None else (getattr(cfg, "patience", 0) or 0))
@@ -364,16 +466,34 @@ def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom
     c_norm0 = c_norm_init.detach().clone()
     c_anom0 = c_anom_init.detach().clone()
     ad_img, ad_les = _copy_adapter(ad_img, device), _copy_adapter(ad_les, device)
+    dim = int(PR.feat_dim(c_norm_init))
+    patch_ad = _copy_patch_ad(patch_ad, cfg, dim, device)
     for p in list(ad_img.parameters()) + list(ad_les.parameters()):
         p.requires_grad_(True)
-    opt = torch.optim.Adam([
+    groups = [
         {"params": proto.parameters(), "lr": cfg.stage2_lr_proto},
         {"params": list(ad_img.parameters()) + list(ad_les.parameters()),
          "lr": cfg.stage2_lr_adapter},
-    ], eps=1e-4)
+    ]
+    if patch_ad is not None:
+        groups.append({
+            "params": patch_ad.parameters(),
+            "lr": float(nested(cfg, "patch_adapter", "lr", cfg.stage2_lr_adapter)),
+        })
+        ctx["patch_adapter"] = patch_ad
+    opt = torch.optim.Adam(groups, eps=1e-4)
     bs, per_epoch = _train_batch(len(train_idx), cfg.stage2_batch)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=max(1, n_epochs * per_epoch), eta_min=1e-6)
+    lam_f = float(nested(cfg, "visual", "lam_focal", 0.5))
+    lam_tv = float(nested(cfg, "visual", "lam_tversky", 0.5))
+    lam_c = float(nested(cfg, "visual", "lam_contrast", 0.3))
+    lam_s = float(nested(cfg, "visual", "lam_consistency", 0.2))
+    gamma = float(nested(cfg, "visual", "focal_gamma", 2.0))
+    tv_a = float(nested(cfg, "visual", "tversky_alpha", 0.3))
+    tv_b = float(nested(cfg, "visual", "tversky_beta", 0.7))
+    attr_w = float(nested(cfg, "text", "attr_w", getattr(cfg, "text_attr_w", 0.5)))
+    pack = ctx.get("text_pack")
     q = max(1, int(getattr(cfg, "q_sel", 3)))
     n_idx, a_idx = _norm_anom_idx(train_idx, y_dev)
     best = {"score": -1.0, "hit1": -1.0, "hit3": -1.0, "epoch": -1, "state": None,
@@ -381,6 +501,8 @@ def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom
     hist = []
     for ep in range(n_epochs):
         proto.train(); ad_img.train(); ad_les.train()
+        if patch_ad is not None:
+            patch_ad.train()
         tot, nb, acc_stats = 0.0, 0, {}
         for _ in range(per_epoch):
             if len(a_idx) and len(n_idx):
@@ -393,24 +515,42 @@ def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom
             bi = b.detach().cpu().numpy()
             pf = {l: torch.as_tensor(np.asarray(patch_cpu[l][bi])).to(device, torch.float32)
                   for l in layers}
-            s_flat = HM.heatmap_diff(
-                pf, c_anom, c_norm, layers, image_size=cfg.image_size,
+            adapted = PA.apply(patch_ad, pf)
+            hm, layer_maps = HM.heatmap_diff(
+                adapted, c_anom, c_norm, layers, image_size=cfg.image_size,
                 smooth_kernel=getattr(cfg, "smooth_kernel", 0),
-                reduce=cfg.reduce, lse_tau=cfg.lse_tau,
-            ).reshape(len(b), -1)
+                reduce=cfg.reduce, lse_tau=cfg.lse_tau, return_layers=True,
+            )
+            s_flat = hm.reshape(len(b), -1)
             yb = y_dev[b]
             Ln, La, stats = LS.localize_loss(s_flat, mask_dev[b], is_anom_dev[b], cfg)
             L_loc = Ln + cfg.lam_loc * La
+            extra = s_flat.new_zeros(())
+            if lam_f:
+                extra = extra + lam_f * LS.focal_loss(
+                    s_flat, mask_dev[b], is_anom_dev[b], gamma=gamma)
+            if lam_tv:
+                extra = extra + lam_tv * LS.tversky_loss(
+                    s_flat, mask_dev[b], is_anom_dev[b], alpha=tv_a, beta=tv_b)
+            if lam_c:
+                extra = extra + lam_c * LS.contrast_loss(
+                    adapted[layers[-1]], pack, c_anom, c_norm, mask_dev[b], is_anom_dev[b])
+            if lam_s:
+                hm_text = None
+                if pack is not None:
+                    hm_text = float(ctx.get("text_sign", 1.0)) * SG.text_heatmap(
+                        adapted, pack, layers, cfg.image_size, attr_w=attr_w)
+                extra = extra + lam_s * LS.consistency_loss(layer_maps, hm, hm_text)
             m_b = mask_dev[b].reshape(-1, cfg._grid, cfg._grid)
             if cfg.lesion_source == "gt_mask":
-                f_les = make_lesion_features(pf[layers[-1]], m_b, yb, q, rng)
+                f_les = make_lesion_features(adapted[layers[-1]], m_b, yb, q, rng)
             else:
                 with torch.no_grad():
                     f_les = LSN.topq_from_score(
-                        pf[layers[-1]], s_flat.reshape(-1, cfg._grid, cfg._grid), q)
+                        adapted[layers[-1]].detach(), s_flat.reshape(-1, cfg._grid, cfg._grid), q)
             L_cls = ad_img.loss(f_cls_all[b], yb, cfg.margin, cfg.arcface_scale)
             L_cls = L_cls + cfg.beta_lesion * ad_les.loss(f_les, yb, cfg.margin, cfg.arcface_scale)
-            loss = L_loc + cfg.alpha_cls * L_cls
+            loss = L_loc + cfg.alpha_cls * L_cls + extra
             opt.zero_grad(); loss.backward(); opt.step(); sched.step()
             tot += loss.item(); nb += 1
             for k, v in stats.items():
@@ -418,8 +558,20 @@ def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom
                     acc_stats[k] = acc_stats.get(k, 0.0) + v / max(1, per_epoch)
 
         proto.eval(); ad_img.eval(); ad_les.eval()
+        if patch_ad is not None:
+            patch_ad.eval()
+            ctx["patch_adapter"] = patch_ad
         c_norm, c_anom = proto.normalized()
         row = {"epoch": ep, "loss": tot / max(1, nb), **proto.drift(c_norm0, c_anom0)}
+
+        def _pack_state():
+            st = {"proto": {k: v.clone() for k, v in proto.state_dict().items()},
+                  "img": copy.deepcopy(ad_img.state_dict()),
+                  "les": copy.deepcopy(ad_les.state_dict())}
+            if patch_ad is not None:
+                st["patch"] = copy.deepcopy(patch_ad.state_dict())
+            return st
+
         if eval_tgt is not None:
             met, sv = _eval_adapters(cfg, ctx, ad_img, ad_les, eval_tgt, c_norm, c_anom)
             sel = _stage2_select_score(sv, m14v, eval_tgt["label"])
@@ -434,9 +586,7 @@ def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom
             if better and guard:
                 best.update({"score": sel["score"], "hit1": sel["hit1"], "hit3": sel["hit3"],
                              "epoch": ep, "auc": sel["auc"], "wait": 0,
-                             "state": {"proto": {k: v.clone() for k, v in proto.state_dict().items()},
-                                       "img": copy.deepcopy(ad_img.state_dict()),
-                                       "les": copy.deepcopy(ad_les.state_dict())}})
+                             "state": _pack_state()})
             else:
                 best["wait"] = best.get("wait", 0) + 1
                 if patience and best["wait"] >= patience:
@@ -446,10 +596,7 @@ def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom
                     break
         else:
             best = {"score": float("nan"), "hit1": float("nan"), "hit3": float("nan"),
-                    "epoch": ep, "auc": float("nan"), "wait": 0,
-                    "state": {"proto": {k: v.clone() for k, v in proto.state_dict().items()},
-                              "img": copy.deepcopy(ad_img.state_dict()),
-                              "les": copy.deepcopy(ad_les.state_dict())}}
+                    "epoch": ep, "auc": float("nan"), "wait": 0, "state": _pack_state()}
         hist.append(row)
         if verbose and (ep % 5 == 0 or ep == n_epochs - 1):
             extra = (f" score {row.get('val_score', float('nan')):.4f} "
@@ -461,7 +608,66 @@ def _run_stage2(cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom
         proto.load_state_dict(best["state"]["proto"])
         ad_img.load_state_dict(best["state"]["img"])
         ad_les.load_state_dict(best["state"]["les"])
-    return proto, ad_img, ad_les, hist, best
+        if patch_ad is not None and "patch" in best["state"]:
+            patch_ad.load_state_dict(best["state"]["patch"])
+    return proto, ad_img, ad_les, hist, best, patch_ad
+
+
+def _fit_gate_and_tau(cfg, ctx, oof_records, device, verbose=False):
+    """OOF 上训空间门控、选二值阈值。不碰 test。
+
+    τ 在 eval_size 上搜（与 apply_maps / mask_dice 同一套闭运算），
+    日志里的 Dice 是 OOF 拟合值，不是 test。
+    """
+    from paclipf import evaluate as EV
+
+    from . import cv
+    from . import postprocess as PP
+    from . import spatial as SP
+    from .grid import nested
+
+    gate = None
+    if bool(nested(cfg, "spatial_fuse", "enable", True)):
+        maps, mask, _ = cv.oof_anomaly_maps(oof_records)
+        gate = SP.from_cfg(cfg, device)
+        if gate is not None:
+            if verbose:
+                print("[stage2] 在 OOF 异常切片上训空间门控")
+            gate = SP.train_gate(
+                gate, maps, mask,
+                epochs=int(nested(cfg, "spatial_fuse", "epochs", 40)),
+                lr=float(nested(cfg, "spatial_fuse", "lr", 1e-3)),
+                verbose=verbose,
+            )
+            q = max(1, int(getattr(cfg, "q_img", 3)))
+            for rec in oof_records:
+                sig = rec["sig"]
+                m = {"proto": sig["hm"]}
+                if "hm_text" in sig:
+                    m["text"] = sig["hm_text"]
+                if "hm_mem" in sig:
+                    m["mem"] = sig["hm_mem"]
+                with torch.no_grad():
+                    hm_f = gate.fuse(m)
+                sig["hm_fused"] = hm_f
+                flat = hm_f.reshape(hm_f.shape[0], -1)
+                sig["s_flat_fused"] = flat
+                sig["S_heat_fused"] = flat.topk(q, dim=-1).values.mean(-1)
+    tau, dice = 0.5, float("nan")
+    if PP.enabled(cfg):
+        hm14 = cv.oof_held_heatmaps(oof_records, "hm_fused")
+        entries = cv.oof_held_entries(ctx, oof_records)
+        masks = EV.load_masks_px(entries, cfg)
+        keep = [i for i, m in enumerate(masks) if m is not None]
+        if hm14 is not None and keep:
+            tau, dice = PP.search_tau_eval(
+                hm14[keep], [masks[i] for i in keep], cfg,
+                entries=[entries[i] for i in keep])
+        if verbose:
+            size = int(getattr(cfg, "eval_size", 240))
+            print(f"[stage2] OOF 二值 mask τ={tau:.2f}  Dice={dice:.4f} "
+                  f"(eval_size={size}, 拟合 Dice, 非 test)")
+    return gate, tau, dice
 
 
 def train_stage2(cfg, ctx, stage1, device="cuda", seed=None, verbose=True):
@@ -493,6 +699,9 @@ def train_stage2(cfg, ctx, stage1, device="cuda", seed=None, verbose=True):
     if cv.uses_case_cv(ctx) and cfg.train_scope == "few_shot" and not fold_states:
         print("[stage2] 警告: 没有 Stage1 折内权重,无法做症例留一,改为全支持集训满 epoch")
 
+    pad0 = stage1.get("patch_ad")
+    from . import prototypes as PR
+    dim = int(PR.feat_dim(ctx["c_norm"]))
     if cv.uses_case_cv(ctx) and cfg.train_scope == "few_shot" and fold_states:
         fold_best, oof_records = [], []
         by_held = {fs["held"]: fs for fs in fold_states}
@@ -504,18 +713,24 @@ def train_stage2(cfg, ctx, stage1, device="cuda", seed=None, verbose=True):
             m14v = tgt["mask14"].reshape(len(tgt["label"]), -1).bool()
             ad_i = _adapter_from_state(st["img"], device)
             ad_l = _adapter_from_state(st["les"], device)
+            pad_f = None
+            if st.get("patch") is not None:
+                pad_f = _copy_patch_ad(None, cfg, dim, device)
+                if pad_f is not None:
+                    pad_f.load_state_dict(st["patch"])
             if verbose:
                 print(f"[stage2] fold hold {held}  train {len(tr)} / val {len(ho)}")
-            proto_f, ad_if, ad_lf, _, best = _run_stage2(
+            proto_f, ad_if, ad_lf, _, best, pad_f = _run_stage2(
                 cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom_dev,
                 tr, ad_i, ad_l, st["c_norm"].to(device), st["c_anom"].to(device),
                 eval_tgt=tgt, m14v=m14v, patience=fold_pat,
-                rng=rng, verbose=verbose, tag=f"{held} ")
+                rng=rng, verbose=verbose, tag=f"{held} ", patch_ad=pad_f)
             fold_best.append(best["epoch"] if best["epoch"] >= 0 else cfg.stage2_epochs - 1)
             cn, ca = proto_f.normalized()
             rec = cv.fold_signals(
                 cfg, ctx, tr, ho, adapter_img=ad_if, adapter_lesion=ad_lf,
-                text_pack=ctx.get("text_pack"), c_norm=cn, c_anom=ca)
+                text_pack=ctx.get("text_pack"), c_norm=cn, c_anom=ca,
+                patch_adapter=pad_f)
             rec["held"] = held
             oof_records.append(rec)
         if early:
@@ -525,49 +740,74 @@ def train_stage2(cfg, ctx, stage1, device="cuda", seed=None, verbose=True):
             best_ep = int(cfg.stage2_epochs)
         if verbose:
             print(f"[stage2] 症例 CV {'选' if early else '固定'} epoch={best_ep} (折内最优 {fold_best})")
-        proto, ad_img, ad_les, hist, best = _run_stage2(
+        proto, ad_img, ad_les, hist, best, pad = _run_stage2(
             cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom_dev,
             idx, stage1["ad_img"], stage1["ad_les"], ctx["c_norm"], ctx["c_anom"],
             eval_tgt=None, n_epochs=best_ep, patience=0,
-            rng=rng, verbose=verbose, tag="final ")
+            rng=rng, verbose=verbose, tag="final ", patch_ad=pad0)
         best["epoch"] = best_ep - 1
 
-        fuse_w, hit, table = cv.search_map_oof(cfg, oof_records)
-        cv.add_fused_scores(cfg, oof_records, fuse_w)
+        linear_w, linear_hit, linear_table = cv.search_map_oof(cfg, oof_records)
+        cv.add_fused_scores(cfg, oof_records, linear_w)
+        gate, tau, oof_dice = _fit_gate_and_tau(
+            cfg, ctx, oof_records, device, verbose=verbose)
+        # 门控开着时线性 fuse_w 不是部署方案；hit / α / AUC 一律用部署图。
+        if gate is not None:
+            hit = cv.fused_oof_hit(oof_records)
+            fuse_w, table = None, None
+        else:
+            hit, fuse_w, table = linear_hit, linear_w, linear_table
         a_f, auc_f, _ = cv.search_alpha_oof(oof_records, "S_heat_fused")
         a_pt, l_pt, acc, _, edge = cv.search_fusion_oof(cfg, oof_records, pmetrics.top1_acc)
         hp = {"fuse_w": fuse_w, "fuse_alpha": float(a_f), "oof_hit": hit,
               "oof_img_auc": auc_f, "alpha_pt": a_pt, "lam_pt": l_pt,
-              "oof_acc": acc, "edge_warning": edge, "table": table}
+              "oof_acc": acc, "edge_warning": edge, "table": table,
+              "post_tau": float(tau), "oof_mask_dice": float(oof_dice),
+              "map_fuse": "spatial" if gate is not None else "linear",
+              "linear_fuse_w": linear_w, "linear_oof_hit": linear_hit}
         if any("S_adapt_margin" in r["sig"] for r in oof_records):
             w3, auc3, _ = cv.search_three_oof(oof_records, "S_heat_fused")
             hp.update({"w_heat": w3[0], "w_text": w3[1], "w_adapt": w3[2],
                        "oof_img_auc": float(auc3)})
         if verbose:
-            print(f"[stage2] OOF fuse_w {fuse_w}  hit@1={hit:.4f}  "
-                  f"alpha_fuse={a_f:.3f}  AUC={hp['oof_img_auc']:.4f}  α_pt={a_pt} λ_pt={l_pt}")
+            if gate is not None:
+                print(f"[stage2] OOF 空间门控 hit@1={hit:.4f}  "
+                      f"alpha_fuse={a_f:.3f}  AUC={hp['oof_img_auc']:.4f}  "
+                      f"α_pt={a_pt} λ_pt={l_pt}")
+                print(f"[stage2] 线性融合(未部署) fuse_w={linear_w}  "
+                      f"hit@1={linear_hit:.4f}")
+            else:
+                print(f"[stage2] OOF fuse_w {fuse_w}  hit@1={hit:.4f}  "
+                      f"alpha_fuse={a_f:.3f}  AUC={hp['oof_img_auc']:.4f}  "
+                      f"α_pt={a_pt} λ_pt={l_pt}")
             if "w_adapt" in hp:
                 print(f"[stage2] OOF 图像分 w_heat={hp['w_heat']:.2f} "
                       f"w_text={hp['w_text']:.2f} w_adapt={hp['w_adapt']:.2f}")
         ctx["hp"] = hp
         ctx["fuse_w"] = fuse_w
         ctx["fuse_alpha"] = float(a_f)
+        ctx["spatial_gate"] = gate
+        ctx["patch_adapter"] = pad
+        ctx["post_tau"] = float(tau)
     else:
         tgt = ctx["val"] if not cv.uses_case_cv(ctx) else None
         m14v = _mask14_of(cfg, ctx, tgt) if tgt is not None else None
-        proto, ad_img, ad_les, hist, best = _run_stage2(
+        proto, ad_img, ad_les, hist, best, pad = _run_stage2(
             cfg, ctx, device, patch_cpu, f_cls_all, y_dev, mask_dev, is_anom_dev,
             idx, stage1["ad_img"], stage1["ad_les"], ctx["c_norm"], ctx["c_anom"],
-            eval_tgt=tgt, m14v=m14v, rng=rng, verbose=verbose)
+            eval_tgt=tgt, m14v=m14v, rng=rng, verbose=verbose, patch_ad=pad0)
+        ctx["patch_adapter"] = pad
+        gate, tau = None, 0.5
 
     if verbose:
         print(f"[stage2] 最优 epoch {best['epoch']} "
               f"(score {best.get('score', float('nan')):.4f} hit@1 {best.get('hit1', float('nan')):.4f}),"
               f" 用时 {(time.time()-t0)/60:.1f} 分钟")
-    save_state(cfg, "stage2", proto=proto, ad_img=ad_img, ad_les=ad_les,
-               hp=ctx.get("hp", stage1.get("hp", {})))
-    return {"proto": proto, "ad_img": ad_img, "ad_les": ad_les, "hist": hist,
-            "best": best, "seed": seed, "hp": ctx.get("hp", {})}
+    save_state(cfg, "stage2", proto=proto, ad_img=ad_img, ad_les=ad_les, patch_ad=pad,
+               spatial_gate=gate, post_tau=tau, hp=ctx.get("hp", stage1.get("hp", {})))
+    return {"proto": proto, "ad_img": ad_img, "ad_les": ad_les, "patch_ad": pad,
+            "spatial_gate": gate, "hist": hist, "best": best, "seed": seed,
+            "hp": ctx.get("hp", {})}
 
 
 def _val_mask14(cfg, ctx):

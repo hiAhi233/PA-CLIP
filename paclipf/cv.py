@@ -215,23 +215,31 @@ def rebuild_proto(cfg, ctx, train_idx, device=None):
         }
     sel = train_idx.detach().cpu() if torch.is_tensor(train_idx) else torch.as_tensor(train_idx)
     pool = ctx["pool"]
-    l11 = tuple(cfg.patch_layers)[-1]
-    if l11 in (pool.get("patch") or {}):
-        patch = pool["patch"][l11][sel]
+    layers = tuple(cfg.patch_layers)
+    per_layer = bool(getattr(cfg, "proto_per_layer", True))
+    mmap = pool_mmap(cfg, ctx) if per_layer or layers[-1] not in (pool.get("patch") or {}) else None
+    bi = sel.numpy() if hasattr(sel, "numpy") else np.asarray(sel)
+    if per_layer:
+        patch_dict = {l: torch.as_tensor(np.asarray(mmap[l][bi])) for l in layers}
+    elif layers[-1] in (pool.get("patch") or {}):
+        patch_dict = {layers[-1]: pool["patch"][layers[-1]][sel]}
     else:
-        mmap = pool_mmap(cfg, ctx)
-        patch = torch.as_tensor(np.asarray(mmap[l11][sel.numpy()]))
-    pr = PR.build_from_features(
-        patch,
-        pool["mask14"][sel],
-        pool["label"][sel],
-        pool["has_mask"][sel],
+        patch_dict = {layers[-1]: torch.as_tensor(np.asarray(mmap[layers[-1]][bi]))}
+    common = dict(
+        mask14=pool["mask14"][sel],
+        label=pool["label"][sel],
+        has_mask=pool["has_mask"][sel],
         k=cfg.normal_proto_k,
+        k_anom=int(getattr(cfg, "anomaly_proto_k", 6)),
         double_norm=cfg.double_norm,
         seed=getattr(cfg, "seed", 111),
         n_init=getattr(cfg, "kmeans_n_init", 10),
         include_lesion_outside=getattr(cfg, "normal_pool_include_lesion_outside", False),
     )
+    if per_layer:
+        pr = PR.build_layered(patch_dict, layers, **common)
+    else:
+        pr = PR.build_from_features(patch_dict[layers[-1]], **common)
     ctx["_proto_by_train"][key] = {
         "c_norm": pr["c_norm"].detach().cpu(),
         "c_anom": pr["c_anom"].detach().cpu(),
@@ -245,14 +253,16 @@ def rebuild_proto(cfg, ctx, train_idx, device=None):
 
 
 def rebuild_memory(cfg, ctx, train_idx, device=None):
-    """折内 Memory:不得含 held-out 病灶 patch。同 train_idx 命中缓存。"""
+    """折内 Memory:不得含 held-out 病灶 patch。同 train_idx 命中缓存。带网格坐标。"""
     import torch.nn.functional as F
+    from .grid import patch_xy
 
     device = device or ctx["device"]
     key = _idx_key(train_idx)
     cached = (ctx.setdefault("_mem_by_train", {})).get(key)
     if cached is not None:
-        return {"a": cached["a"].to(device), "n": cached["n"].to(device)}
+        out = {k: cached[k].to(device) for k in cached}
+        return out
     sel = train_idx.detach().cpu() if torch.is_tensor(train_idx) else torch.as_tensor(train_idx)
     pool = ctx["pool"]
     l11 = tuple(cfg.patch_layers)[-1]
@@ -261,22 +271,34 @@ def rebuild_memory(cfg, ctx, train_idx, device=None):
     else:
         mmap = pool_mmap(cfg, ctx)
         patch = torch.as_tensor(np.asarray(mmap[l11][sel.numpy()]))
+    n, l, d = patch.shape
+    H = int(l ** 0.5)
+    xy = patch_xy(H, device=patch.device, dtype=torch.float32)
     mask = pool["mask14"][sel].reshape(len(sel), -1)
     y = pool["label"][sel]
     has = pool["has_mask"][sel]
     valid = (y == 1) & has & mask.any(1)
     if not valid.any():
         raise RuntimeError("折内 Memory Bank 没有非空 mask 的异常切片")
-    a_mem = F.normalize(patch[valid][mask[valid].bool()].float(), dim=-1)
+    a_feat = patch[valid][mask[valid].bool()].float()
+    a_pos = xy.unsqueeze(0).expand(int(valid.sum()), -1, -1)[mask[valid].bool()]
+    a_mem = F.normalize(a_feat, dim=-1)
     n_sel = y == 0
-    n_mem = F.normalize(patch[n_sel].reshape(-1, patch.shape[-1]).float(), dim=-1)
-    ctx["_mem_by_train"][key] = {"a": a_mem.detach().cpu(), "n": n_mem.detach().cpu()}
-    return {"a": a_mem.to(device), "n": n_mem.to(device)}
+    n_feat = patch[n_sel].reshape(-1, d).float()
+    n_pos = xy.unsqueeze(0).expand(int(n_sel.sum()), -1, -1).reshape(-1, 2)
+    n_mem = F.normalize(n_feat, dim=-1)
+    packed = {
+        "a": a_mem.detach().cpu(), "n": n_mem.detach().cpu(),
+        "a_pos": a_pos.detach().cpu(), "n_pos": n_pos.detach().cpu(),
+    }
+    ctx["_mem_by_train"][key] = packed
+    return {k: v.to(device) for k, v in packed.items()}
 
 
 @torch.no_grad()
 def fold_signals(cfg, ctx, train_idx, held_idx, adapter_img=None, adapter_lesion=None,
-                 text_pack=None, c_norm=None, c_anom=None, memory=None):
+                 text_pack=None, c_norm=None, c_anom=None, memory=None,
+                 patch_adapter=None, spatial_gate=None):
     """折内:重算(或传入)原型/Memory,在 held-out+正常 上算信号。fuse_w 不进,留给后续搜。"""
     from . import signals as SG
 
@@ -295,6 +317,8 @@ def fold_signals(cfg, ctx, train_idx, held_idx, adapter_img=None, adapter_lesion
         adapter_img=adapter_img, adapter_lesion=adapter_lesion,
         text_pack=pack, memory=memory, fuse_w=None,
         text_sign=ctx.get("text_sign", 1.0),
+        patch_adapter=patch_adapter if patch_adapter is not None else ctx.get("patch_adapter"),
+        spatial_gate=spatial_gate,
     )
     return {
         "sig": sig, "split": split, "n_held": n_held,
@@ -326,6 +350,7 @@ def collect_oof(cfg, ctx, adapter_img=None, adapter_lesion=None, text_pack=None,
             c_norm=extra.get("c_norm"),
             c_anom=extra.get("c_anom"),
             memory=extra.get("memory"),
+            patch_adapter=extra.get("patch_adapter"),
         )
         rec["held"] = held
         rec["train_idx"] = tr
@@ -354,14 +379,65 @@ def oof_anomaly_maps(records):
     return maps, mask, cases
 
 
+def fused_oof_hit(records, metric="hit@1_valid"):
+    """部署图（hm_fused）上的症例平均 hit，与 search_map_weights 同一口径。"""
+    from . import diag
+
+    flats, masks, cases_all = [], [], []
+    for rec in records:
+        n = rec["n_held"]
+        sig, split = rec["sig"], rec["split"]
+        hm = sig.get("hm_fused", sig["hm"])[:n]
+        flats.append(hm.reshape(n, -1))
+        masks.append(split["mask14"][:n].reshape(n, -1))
+        cases_all.extend(split["case_ids"][:n])
+    if not flats:
+        return float("nan")
+    s = torch.cat(flats, 0)
+    m = torch.cat(masks, 0)
+    vals = []
+    for cid in sorted(set(cases_all)):
+        idx = [i for i, c in enumerate(cases_all) if c == cid]
+        vals.append(diag.hit_rate(s[idx], m[idx])[metric])
+    return float(sum(vals) / max(1, len(vals)))
+
+
+def oof_held_heatmaps(records, key="hm_fused"):
+    parts = []
+    for rec in records:
+        n = rec["n_held"]
+        sig = rec["sig"]
+        parts.append(sig.get(key, sig["hm"])[:n])
+    return torch.cat(parts, 0) if parts else None
+
+
+def oof_held_entries(ctx, records):
+    """OOF held-out 切片对应的 pool entries（给像素 GT）。"""
+    by_path = {e["image_path"]: e for e in ctx["entries"][0]}
+    paths = ctx["pool"]["manifest"]["image_paths"]
+    out = []
+    for rec in records:
+        n = rec["n_held"]
+        for i in rec["split"]["pool_idx"][:n]:
+            i = int(i)
+            if i < 0:
+                out.append({"mask_path": None})
+                continue
+            out.append(by_path.get(paths[i], {"mask_path": None}))
+    return out
+
+
 def search_map_oof(cfg, records, metric="hit@1_valid"):
     from . import fusion as FU
+    from .grid import nested
 
     maps, mask, cases = oof_anomaly_maps(records)
     grid = list(getattr(cfg, "heatmap_fuse_grid", [0.0, 0.25, 0.5, 0.75, 1.0]))
     min_w = dict(getattr(cfg, "heatmap_min_w", None) or {})
+    objective = str(nested(cfg, "heatmap", "fuse_objective",
+                           getattr(cfg, "heatmap_fuse_objective", "hit_ap")))
     w, score, table = FU.search_map_weights(
-        maps, mask, cases, grid=grid, metric=metric, min_w=min_w)
+        maps, mask, cases, grid=grid, metric=metric, min_w=min_w, objective=objective)
     return w, score, table
 
 

@@ -21,7 +21,10 @@ Module map
   heatmap       differentiable heatmap (parity-checked against the numpy inference path)
   lesion        lesion feature pooling (uniform top-q / GT mask)
   localization  14x14 -> pixel map, ROI-aware z-score, tissue mask
-  losses        Stage-2 localization losses
+  losses        Stage-2 localization + L_visual (focal / tversky / contrast / consistency)
+  patch_adapter residual bottleneck on frozen patch tokens (shared across layers)
+  spatial       per-location fusion gate
+  postprocess   upsample, morphological close, Top-k binary mask
   text_adapter  residual adapter on frozen text embeddings + hierarchical prompts
   text_losses   Stage-text global / patch / diversity / preserve losses
   classify      text head and same-space logit combination

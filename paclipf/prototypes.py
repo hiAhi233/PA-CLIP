@@ -10,10 +10,9 @@ PA-CLIP 的 pa_clip/prototypes.py:21 只做了 class-wise 那一次:
 两次归一化不可交换,且 PA-CLIP 是在归一化之后才转置的,顺序与论文不同。
 对已归一化的结果补做 dim=0 与在原始中心上做 dim=0 不等价。
 
-关于"7 个原型一起归一化还是只归一化 6 个正常原型":
-本实现把 6 个正常中心 + 1 个异常均值堆成 (7,D) **一起**归一化。
-理由:PA-CLIP 的打分是 sim(p,c_anom) − max_k sim(p,c_norm^k),两项必须同尺度,
-否则差值有偏。Proto-Adapter 也是在全部类别原型上一起归一化。
+关于"正常+异常一起归一化":
+本实现把 Kn 个正常中心 + Ka 个异常中心堆成 (Kn+Ka, D) **按层一起**归一化。
+打分是 max_j sim(p,c_anom^j) − max_k sim(p,c_norm^k)，两项必须同尺度。
 """
 import numpy as np
 import torch
@@ -47,19 +46,62 @@ def _kmeans_centers(x, k, seed, max_samples=200_000, n_init=3):
     return centers, pi
 
 
+def feat_dim(c):
+    """(D,) / (D,K) / (L,D,K) → D。"""
+    if c.dim() == 1:
+        return int(c.shape[0])
+    if c.dim() == 2:
+        return int(c.shape[0])
+    return int(c.shape[-2])
+
+
+def as_dk(c):
+    """收成 (D, K)。1-D → (D,1)；3-D 取最后一层。"""
+    if c.dim() == 1:
+        return c.unsqueeze(-1)
+    if c.dim() == 3:
+        return c[-1]
+    return c
+
+
+def layer_pair(c_norm, c_anom, layer_i):
+    """第 i 层的 (c_norm (D,Kn), c_anom (D,Ka))。层数不够则复用最后一套。"""
+    if c_norm.dim() == 3:
+        i = min(int(layer_i), c_norm.shape[0] - 1)
+        cn = c_norm[i]
+        if c_anom.dim() == 3:
+            j = min(int(layer_i), c_anom.shape[0] - 1)
+            ca = c_anom[j]
+        else:
+            ca = as_dk(c_anom)
+    else:
+        cn, ca = as_dk(c_norm), as_dk(c_anom)
+    return cn, ca
+
+
+def _proto_vecs(c):
+    """任意形状 → (P, D) 单位化前的原型行。"""
+    if c.dim() == 1:
+        return c.unsqueeze(0)
+    if c.dim() == 2:
+        return c.t()
+    return c.permute(0, 2, 1).reshape(-1, c.shape[1])
+
+
 def build_from_features(
     patch_l11,
     mask14,
     label,
     has_mask,
     k=6,
+    k_anom=6,
     double_norm=True,
     seed=111,
     kmeans_max=200_000,
     n_init=3,
     include_lesion_outside=False,
 ):
-    """从缓存的 (layer 11) patch 特征构建原型。
+    """从一层 patch 特征构建多正常 / 多异常原型。
 
     patch_l11 : (N, 196, D) 已 L2 归一化的 patch 特征
     mask14    : (N, 14, 14) bool,病灶掩膜(无 mask 的样本为全零)
@@ -67,12 +109,12 @@ def build_from_features(
     has_mask  : (N,) bool,meta 里是否有 mask_path
 
     返回 dict:
-      c_norm       (D, K)  L2 归一化后的正常原型
-      c_anom       (D,)    L2 归一化后的异常原型
-      c_norm_raw   (K, D)  归一化前的中心(Stage 2 的参数初始化用)
-      c_anom_raw   (D,)    归一化前的均值
-      pi           (K,)    各正常簇的样本占比(适配器加权初始化用)
-      meta         dict    样本量等,便于在日志里如实报告
+      c_norm       (D, Kn)
+      c_anom       (D, Ka)  Ka≥1，不再是单个向量
+      c_norm_raw   (Kn, D)
+      c_anom_raw   (Ka, D)
+      pi           (Kn,)
+      meta         dict
     """
     n, n_patch, D = patch_l11.shape
     patch_l11 = patch_l11.float()
@@ -94,33 +136,41 @@ def build_from_features(
             n_from_outside = outside.shape[0]
     pool = torch.cat(parts, 0).numpy().astype(np.float32)
 
-    # ---------------- 异常 patch 池 ----------------
-    valid = anom & has_mask & mask_flat.any(dim=1)      # 14x14 下 mask 为空的切片无监督信号
+    # ---------------- K-means 正常 ----------------
+    kn = max(1, min(int(k), int(pool.shape[0])))
+    centers, pi = _kmeans_centers(pool, kn, seed, kmeans_max, n_init)
+
+    # ---------------- 异常：多个原型（K-means；patch 不够则退回均值） ----------------
+    valid = anom & has_mask & mask_flat.any(dim=1)
     if not valid.any():
         raise RuntimeError("没有任何非空 mask 的异常切片,无法构建异常原型")
-    a_patches = patch_l11[valid][mask_flat[valid]]      # (P, D)
-    c_anom_raw = a_patches.mean(0)
+    a_patches = patch_l11[valid][mask_flat[valid]]
+    ka = max(1, min(int(k_anom), int(a_patches.shape[0])))
+    if ka <= 1:
+        a_centers = a_patches.mean(0, keepdim=True)
+        a_pi = torch.ones(1)
+    else:
+        a_centers, a_pi = _kmeans_centers(
+            a_patches.detach().cpu().numpy().astype(np.float32), ka, seed, kmeans_max, n_init)
 
-    # ---------------- K-means ----------------
-    centers, pi = _kmeans_centers(pool, k, seed, kmeans_max, n_init)
-
-    # ---------------- 双重 L2 归一化 ----------------
-    stacked = torch.cat([centers, c_anom_raw[None]], 0)          # (K+1, D)
+    stacked = torch.cat([centers, a_centers], 0)
     if double_norm:
-        stacked = F.normalize(stacked, dim=0)                    # channel-wise ← PA-CLIP 缺的
-    stacked = F.normalize(stacked, dim=1)                        # class-wise
+        stacked = F.normalize(stacked, dim=0)
+    stacked = F.normalize(stacked, dim=1)
 
-    c_norm = stacked[:k].t().contiguous()                        # (D, K)
-    c_anom = stacked[k].contiguous()                             # (D,)
+    kn = int(centers.shape[0])
+    c_norm = stacked[:kn].t().contiguous()
+    c_anom = stacked[kn:].t().contiguous()
 
     return {
         "c_norm": c_norm,
         "c_anom": c_anom,
         "c_norm_raw": centers,
-        "c_anom_raw": c_anom_raw,
+        "c_anom_raw": a_centers,
         "pi": pi,
         "meta": {
-            "k": k,
+            "k": kn,
+            "k_anom": int(c_anom.shape[1]),
             "double_norm": double_norm,
             "n_normal_patches": int(pool.shape[0]),
             "n_from_normal_slices": n_from_normal,
@@ -130,46 +180,97 @@ def build_from_features(
             "n_anomaly_slices_total": int(anom.sum()),
             "n_anomaly_patches": int(a_patches.shape[0]),
             "n_anomaly_slices_mask_empty": int((anom & has_mask & ~mask_flat.any(dim=1)).sum()),
+            "anom_cluster_pi": a_pi.detach().cpu().tolist() if torch.is_tensor(a_pi) else list(a_pi),
         },
+    }
+
+
+def build_layered(patch_dict, layers, mask14, label, has_mask, k=6, k_anom=6, **kwargs):
+    """每层独立 K-means：c_norm (L,D,Kn)，c_anom (L,D,Ka)。"""
+    layers = tuple(layers)
+    norms, anoms, pis, metas = [], [], [], []
+    for l in layers:
+        r = build_from_features(
+            patch_dict[l], mask14, label, has_mask, k=k, k_anom=k_anom, **kwargs)
+        norms.append(r["c_norm"])
+        anoms.append(r["c_anom"])
+        pis.append(r["pi"])
+        metas.append(r["meta"])
+    kn = min(t.shape[1] for t in norms)
+    ka = min(t.shape[1] for t in anoms)
+    c_norm = torch.stack([t[:, :kn] for t in norms], 0).contiguous()
+    c_anom = torch.stack([t[:, :ka] for t in anoms], 0).contiguous()
+    meta = dict(metas[-1])
+    meta.update({
+        "layers": list(layers),
+        "per_layer": True,
+        "k": kn,
+        "k_anom": ka,
+        "per_layer_meta": metas,
+    })
+    return {
+        "c_norm": c_norm,
+        "c_anom": c_anom,
+        "c_norm_raw": c_norm.permute(0, 2, 1).contiguous(),
+        "c_anom_raw": c_anom.permute(0, 2, 1).contiguous(),
+        "pi": pis[-1],
+        "meta": meta,
     }
 
 
 class LearnablePrototypes(torch.nn.Module):
     """Stage 2:把 c_norm / c_anom 变成可学习参数。
 
-    参数保存为**未归一化**的 raw 形式,前向时现场归一化 —— 与构建期同一套公式
-    ((K+1,D) 上先 dim=0 channel-wise 再 dim=1 class-wise),
-    这样 Stage 2 的起点与 Stage 1 完全一致,任何变化都只能归因于定位损失。
-
-    只存 raw 而不存归一化结果,是因为归一化会破坏梯度流(单位化投影),
-    Adam 在 raw 上更新、前向投影,是这类"球面参数"的常规做法。
+    支持 (D,K) 或分层 (L,D,K)。内部一律存 (L, K, D) raw，前向时按层
+    把正常+异常堆在一起做与构建期相同的双重归一化。
     """
 
     def __init__(self, c_norm, c_anom, double_norm=True):
         super().__init__()
         self.double_norm = double_norm
-        self.c_norm_raw = torch.nn.Parameter(c_norm.t().float().clone().contiguous())  # (K,D)
-        self.c_anom_raw = torch.nn.Parameter(c_anom.float().clone())                   # (D,)
+        cn, ca = c_norm.float(), as_dk(c_anom).float() if c_anom.dim() < 3 else c_anom.float()
+        if cn.dim() == 2:
+            cn = cn.unsqueeze(0)
+        if ca.dim() == 2:
+            ca = ca.unsqueeze(0)
+        if ca.dim() == 1:
+            ca = ca.view(1, -1, 1)
+        self.c_norm_raw = torch.nn.Parameter(cn.permute(0, 2, 1).contiguous())  # (L,Kn,D)
+        self.c_anom_raw = torch.nn.Parameter(ca.permute(0, 2, 1).contiguous())  # (L,Ka,D)
 
     @property
     def n_normal(self):
+        return self.c_norm_raw.shape[1]
+
+    @property
+    def n_layers(self):
         return self.c_norm_raw.shape[0]
 
     def normalized(self):
-        """返回 (c_norm (D,K), c_anom (D,))。"""
-        stacked = torch.cat([self.c_norm_raw, self.c_anom_raw[None]], 0)   # (K+1,D)
-        if self.double_norm:
-            stacked = torch.nn.functional.normalize(stacked, dim=0)        # channel-wise
-        stacked = torch.nn.functional.normalize(stacked, dim=1)            # class-wise
-        return stacked[: self.n_normal].t().contiguous(), stacked[self.n_normal].contiguous()
+        """(L,D,Kn), (L,D,Ka)；单层时仍返回 3-D，heatmap 按层索引。"""
+        ns, a_s = [], []
+        kn = self.c_norm_raw.shape[1]
+        for i in range(self.n_layers):
+            stacked = torch.cat([self.c_norm_raw[i], self.c_anom_raw[i]], 0)
+            if self.double_norm:
+                stacked = torch.nn.functional.normalize(stacked, dim=0)
+            stacked = torch.nn.functional.normalize(stacked, dim=1)
+            ns.append(stacked[:kn].t())
+            a_s.append(stacked[kn:].t())
+        return torch.stack(ns, 0).contiguous(), torch.stack(a_s, 0).contiguous()
 
     @torch.no_grad()
     def drift(self, c_norm0, c_anom0):
-        """相对初始原型的漂移量,用于判断 Stage 2 是否真的动了参数。"""
         c_norm, c_anom = self.normalized()
-        dn = 1.0 - (c_norm.t() @ c_norm0).mean()
-        da = 1.0 - (c_anom @ c_anom0).item()
-        return {"drift_norm": dn.item(), "drift_anom": da}
+        v = F.normalize(_proto_vecs(c_norm), dim=-1)
+        v0 = F.normalize(_proto_vecs(c_norm0.to(v.device)), dim=-1)
+        a = F.normalize(_proto_vecs(c_anom), dim=-1)
+        a0 = F.normalize(_proto_vecs(c_anom0.to(a.device)), dim=-1)
+        n = min(len(v), len(v0))
+        m = min(len(a), len(a0))
+        dn = 1.0 - (v[:n] * v0[:n]).sum(-1).mean()
+        da = 1.0 - (a[:m] * a0[:m]).sum(-1).mean()
+        return {"drift_norm": float(dn), "drift_anom": float(da)}
 
 
 def channel_wise_weights(pi, c_norm_raw):

@@ -67,18 +67,17 @@ class AngularAdapter(nn.Module):
 
 
 def init_weights(c_norm, c_anom, pi=None, weighted=True):
-    """由原型构造适配器初始权重 (2, D)。
+    """由原型构造适配器初始权重 (2, D)。分层时用最后一层；多异常取均值方向。"""
+    from .prototypes import as_dk
 
-    第 0 行 = 正常方向,第 1 行 = 异常方向。
-
-    pi 来自 KMeans 的统计(CPU),c_norm/c_anom 常在 GPU —— 这里统一对齐,
-    避免每个调用点各修一次。
-    """
-    dev = c_norm.device
+    cn = as_dk(c_norm)
+    ca = as_dk(c_anom)
+    dev = cn.device
     if weighted and pi is not None:
-        pi = pi.to(device=dev, dtype=c_norm.dtype)
-        w_norm = F.normalize((pi[:, None] * c_norm.t()).sum(0), dim=0)
+        pi = pi.to(device=dev, dtype=cn.dtype)
+        kn = min(int(pi.numel()), int(cn.shape[1]))
+        w_norm = F.normalize((pi[:kn, None] * cn[:, :kn].t()).sum(0), dim=0)
     else:
-        w_norm = F.normalize(c_norm.mean(1), dim=0)
-    w_anom = F.normalize(c_anom.to(device=dev, dtype=c_norm.dtype), dim=0)
+        w_norm = F.normalize(cn.mean(1), dim=0)
+    w_anom = F.normalize(ca.mean(1), dim=0)
     return torch.stack([w_norm, w_anom], 0)

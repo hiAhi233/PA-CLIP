@@ -153,6 +153,80 @@ def render(cfg, entries, labels, hm_left, hm_right, out_path,
     return out_path, canvas.shape
 
 
+def render_maps(cfg, entries, labels, maps, out_path,
+                n_anom=6, n_norm=2, seed=0, s_flat=None):
+    """流水线拼图: original | GT | proto | text | mem | fused | mask。
+
+    maps: dict, 键为列名,值为 (N,14,14) 或 (N,H,W) numpy/tensor。
+    `mask` 若已是像素二值图 (N,eval_size,eval_size),直接贴。
+    """
+    size = cfg.eval_size
+    labels = np.asarray(labels if not torch.is_tensor(labels) else labels.cpu().numpy())
+    n = len(entries)
+    rng = random.Random(seed)
+    idx_anom = [i for i in range(n) if labels[i] > 0]
+    idx_norm = [i for i in range(n) if labels[i] == 0]
+    pick = rng.sample(idx_anom, min(n_anom, len(idx_anom))) + \
+        rng.sample(idx_norm, min(n_norm, len(idx_norm)))
+    s_np = None if s_flat is None else (s_flat.cpu().numpy() if torch.is_tensor(s_flat) else np.asarray(s_flat))
+
+    order = [k for k in ("proto", "text", "mem", "fused", "mask") if k in maps]
+    titles = ["original", "GT mask"] + order
+    ncols = 2 + len(order)
+
+    def _as(hm, i):
+        x = maps[hm]
+        if torch.is_tensor(x):
+            return x[i].detach().cpu()
+        return np.asarray(x)[i]
+
+    rows = []
+    for i in pick:
+        e = entries[i]
+        has_lesion = labels[i] > 0
+        note = ""
+        if has_lesion and e.get("mask_path"):
+            g = pdata.mask_grid_14(str(Path(cfg.data_root) / e["mask_path"])).reshape(-1).astype(bool)
+            if g.any() and s_np is not None:
+                hit = "YES" if g[int(s_np[i].argmax())] else "NO"
+                note = f"  hit@1 {hit}  (lesion {int(g.sum())} patch)"
+            elif not g.any():
+                note = "  (mask empty at 14x14)"
+        tag = "ANOMALY" if has_lesion else "NORMAL"
+        panels = [_load_img(cfg, e, size), _mask_panel(cfg, e, size)]
+        for k in order:
+            x = _as(k, i)
+            if k == "mask":
+                arr = x.cpu().numpy() if torch.is_tensor(x) else np.asarray(x)
+                if arr.ndim == 2 and arr.shape[0] == size:
+                    rgb = cv2.cvtColor((arr > 0).astype(np.uint8) * 255, cv2.COLOR_GRAY2RGB)
+                    rgb[..., 1:] = 0
+                    panels.append(overlay(_load_img(cfg, e, size), rgb, alpha=0.45))
+                else:
+                    panels.append(_panel(cfg, e, torch.as_tensor(arr).float() if not torch.is_tensor(x) else x, size))
+            else:
+                t = x if torch.is_tensor(x) else torch.as_tensor(x)
+                panels.append(_panel(cfg, e, t.float(), size))
+        rows.append((f"{tag} #{i} {Path(e['image_path']).name}{note}",
+                     panels, (200, 0, 0) if has_lesion else (0, 120, 0)))
+
+    bar_h, head_h = 30, 34
+    W = size * ncols
+    canvas = np.full((head_h + len(rows) * (size + bar_h), W, 3), 255, np.uint8)
+    for c, t in enumerate(titles):
+        canvas[:head_h, c * size:(c + 1) * size] = _label_bar(size, head_h, t)
+    for r, (tg, panels, color) in enumerate(rows):
+        y = head_h + r * (size + bar_h)
+        canvas[y:y + bar_h] = _label_bar(W, bar_h, tg, color)
+        for c, p in enumerate(panels):
+            canvas[y + bar_h:y + bar_h + size, c * size:(c + 1) * size] = p
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(canvas).save(out_path)
+    return out_path, canvas.shape
+
+
 def render_single(cfg, entries, labels, hm, out_path, title="PA-CLIP-F",
                   n_anom=6, n_norm=2, seed=0, s_flat=None):
     """三列拼图:原图 | GT mask(原始分辨率) | 预测热图.

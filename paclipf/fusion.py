@@ -92,12 +92,15 @@ def search_lambda(logits_img, logits_lesion, labels, grid=np.arange(0.0, 2.05, 0
 
 
 def search_map_weights(maps, mask_flat, case_ids, grid=None, metric="hit@1_valid",
-                       min_w=None):
+                       min_w=None, objective="hit_ap"):
     """OOF 异常切片上按症例平均命中率搜热力图融合权重。
 
     默认 hit@1:support 上 hit@3 容易饱和,选不出权重。
-    min_w: {name: 下限},例如 mem≥0.25,避免 Stage2 把 Memory 搜成 0。
+    min_w: {name: 下限},例如 mem≥0.25 且 proto≥0.25,避免把最好的一路搜成 0。
+    objective: 'hit' 只用 metric;'hit_ap' = 0.5·hit@1 + 0.5·14x14 Pixel AP。
     """
+    from sklearn.metrics import average_precision_score
+
     from . import diag
     from . import signals as SG
 
@@ -114,6 +117,12 @@ def search_map_weights(maps, mask_flat, case_ids, grid=None, metric="hit@1_valid
         zs[k] = SG._zscore(x)
 
     cases = sorted(set(case_ids))
+    mask_np = None
+    if str(objective) == "hit_ap":
+        m = mask_flat
+        if hasattr(m, "detach"):
+            m = m.detach().cpu().numpy()
+        mask_np = np.asarray(m).reshape(len(case_ids), -1) > 0
     best = (-1.0, {n: 0.0 for n in names}, [])
     table = []
 
@@ -157,10 +166,20 @@ def search_map_weights(maps, mask_flat, case_ids, grid=None, metric="hit@1_valid
                 h = diag.hit_rate(s_flat[idx], mask_flat[idx])
                 hits.append(h[metric])
             mean_h = float(sum(hits) / max(1, len(hits)))
-            row = {**w, metric: mean_h}
+            score = mean_h
+            ap = float("nan")
+            if mask_np is not None:
+                s_np = s_flat.detach().cpu().numpy().ravel() if hasattr(s_flat, "detach") else np.asarray(s_flat).ravel()
+                y_np = mask_np.ravel().astype(np.int32)
+                if y_np.max() != y_np.min():
+                    ap = float(average_precision_score(y_np, s_np))
+                    score = 0.5 * mean_h + 0.5 * ap
+            row = {**w, metric: mean_h, "score": score}
+            if ap == ap:
+                row["pixel_ap_14"] = ap
             local_table.append(row)
-            if mean_h > local_best[0]:
-                local_best = (mean_h, w, local_table)
+            if score > local_best[0]:
+                local_best = (score, w, local_table)
         return local_best, local_table
 
     best, table = _eval_combos(bool(min_w))

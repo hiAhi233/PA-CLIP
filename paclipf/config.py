@@ -37,6 +37,9 @@ def load(config_path):
         cfg["text"] = SimpleNamespace(**cfg["text"])
     elif "text" not in cfg:
         cfg["text"] = SimpleNamespace(enable=False)
+    for key in ("patch_adapter", "visual", "spatial_fuse", "postprocess", "memory"):
+        if key in cfg and isinstance(cfg[key], dict):
+            cfg[key] = SimpleNamespace(**cfg[key])
 
     _validate(cfg)
     return SimpleNamespace(**cfg)

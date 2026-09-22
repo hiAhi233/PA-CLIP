@@ -7,31 +7,30 @@ import cv2
 
 @torch.no_grad()
 def patch_anomaly_scores(patch_feats, c_anom, c_norm, tau=10.0):
-    """Per-patch anomaly score: tau * (sim(p, c_anom) - max_k sim(p, c_norm^k)).
+    """s(p) = max_j sim(p, c_anom^j) − max_k sim(p, c_norm^k)。
 
-    patch_feats: (N, L, 768) L2-normed; c_anom: (768,); c_norm: (768, K).
-    Temperature tau amplifies the (small, ~0.1) lesion-vs-body margin so the heatmap
-    shows lesion alone instead of washing the whole body into orange.
-    Returns scores: (N, L).
+    patch_feats: (N, L, D)；c_anom: (D,) 或 (D, Ka)；c_norm: (D, Kn)。
     """
-    sim_anom = patch_feats @ c_anom                       # (N, L)
-    sim_norm = patch_feats @ c_norm                       # (N, L, K)
-    sim_norm_max = sim_norm.max(dim=-1).values            # (N, L)
-    return tau * (sim_anom - sim_norm_max)
+    if c_anom.dim() == 1:
+        sim_anom = patch_feats @ c_anom
+    else:
+        sim_anom = (patch_feats @ c_anom).max(dim=-1).values
+    sim_norm = (patch_feats @ c_norm).max(dim=-1).values
+    return tau * (sim_anom - sim_norm)
 
 
 @torch.no_grad()
 def multi_layer_heatmap(patch_feats_dict, c_anom, c_norm, layers, image_size=224, tau=1.0):
-    """Average per-layer patch scores -> (N, 14, 14) heatmaps.
+    """分层原型：第 i 层用第 i 套 (c_norm, c_anom)；否则四层共用一对。"""
+    from .prototypes import layer_pair
 
-    patch_feats_dict: {layer: (N, 196, 768)}. Returns (N, 14, 14).
-    """
-    H = image_size // 16   # ViT-B/16 patch grid side (224 -> 14)
+    H = image_size // 16
     maps = []
-    for l in layers:
-        s = patch_anomaly_scores(patch_feats_dict[l], c_anom, c_norm, tau=tau)   # (N, 196)
+    for i, l in enumerate(layers):
+        cn, ca = layer_pair(c_norm, c_anom, i)
+        s = patch_anomaly_scores(patch_feats_dict[l], ca, cn, tau=tau)
         maps.append(s.view(-1, H, H))
-    return torch.stack(maps, dim=0).mean(dim=0)          # (N, 14, 14)
+    return torch.stack(maps, dim=0).mean(dim=0)
 
 
 @torch.no_grad()

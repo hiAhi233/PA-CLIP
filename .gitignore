@@ -18,7 +18,12 @@ env/
 .DS_Store
 Thumbs.db
 
-# ---- 可视化图(--stage visualize 可重新生成)----
+# ---- 训练产物(不随仓库分发;重跑 --stage all / visualize 会重新生成)----
+# runs/   权重,约 77 MB
+# results/ 指标表
+# visualize/ 热力图
+runs/
+results/
 visualize/
 
 # ---- 训练日志 ----

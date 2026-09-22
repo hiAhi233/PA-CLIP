@@ -41,18 +41,21 @@ def heatmap_exact(patch_feats_dict, c_anom, c_norm, layers, image_size=224, smoo
 
 
 def heatmap_diff(patch_feats_dict, c_anom, c_norm, layers, image_size=224,
-                 smooth_kernel=0, reduce="max", lse_tau=0.1):
+                 smooth_kernel=0, reduce="max", lse_tau=0.1, return_layers=False):
     """可微版。不经过 z-score / sigmoid(逐图标准化在损失里同样有害:
     它会让模型靠"缩小图内方差"降损失,从而破坏跨图标定)。
 
     reduce: 'max' 与部署一致;'lse' 软化,缓解"6 个正常原型里只有少数拿到梯度"。
+    return_layers: True 时额外返回 (n_layers, N, H, H)，给 L_consistency。
     """
     H = image_size // 16
     maps = []
-    for l in layers:
+    from .prototypes import layer_pair
+    for i, l in enumerate(layers):
         f = patch_feats_dict[l]
-        sim_anom = f @ c_anom                                  # (N, L)
-        sim_norm = f @ c_norm                                  # (N, L, K)
+        cn, ca = layer_pair(c_norm, c_anom, i)
+        sim_anom = (f @ ca).max(dim=-1).values if ca.dim() == 2 else f @ ca
+        sim_norm = f @ cn
         if reduce == "max":
             base = sim_norm.max(dim=-1).values
         elif reduce == "lse":
@@ -60,7 +63,11 @@ def heatmap_diff(patch_feats_dict, c_anom, c_norm, layers, image_size=224,
         else:
             raise ValueError(f"reduce 只支持 max / lse,得到 {reduce}")
         maps.append((sim_anom - base).view(-1, H, H))
-    return smooth_map(torch.stack(maps, 0).mean(0), smooth_kernel)
+    stacked = torch.stack(maps, 0)
+    hm = smooth_map(stacked.mean(0), smooth_kernel)
+    if return_layers:
+        return hm, stacked
+    return hm
 
 
 @torch.no_grad()

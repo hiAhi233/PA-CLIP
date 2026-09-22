@@ -44,10 +44,18 @@ def few_shot_indices(cfg, proto_entries, subset_cache):
 
 def build_prototypes(cfg, pool, proto_entries, device="cpu"):
     """按 cfg.proto_source 构建原型。pool 必须是含 layer11 patch 的 pool 缓存。"""
+    layers = tuple(cfg.patch_layers)
+    per_layer = bool(getattr(cfg, "proto_per_layer", True))
     if cfg.proto_source == "few_shot":
         sel = torch.as_tensor(few_shot_indices(cfg, proto_entries, pool), dtype=torch.long)
+        patch = {l: t[sel] for l, t in (pool.get("patch") or {}).items()}
+        if per_layer and any(l not in patch for l in layers):
+            import numpy as np
+            mmap = cache.pool_patch_mmap(cfg, layers, verbose=False)
+            bi = sel.detach().cpu().numpy()
+            patch = {l: torch.as_tensor(np.asarray(mmap[l][bi])) for l in layers}
         sub = {
-            "patch": {l: t[sel] for l, t in pool["patch"].items()},
+            "patch": patch,
             "mask14": pool["mask14"][sel],
             "label": pool["label"][sel],
             "has_mask": pool["has_mask"][sel],
@@ -55,23 +63,40 @@ def build_prototypes(cfg, pool, proto_entries, device="cpu"):
         scope = f"few_shot({cfg.few_shot_normal}+{cfg.few_shot_anomaly}, {len(sel)} 张)"
     else:
         sub = pool
+        if per_layer and any(l not in (sub.get("patch") or {}) for l in layers):
+            import numpy as np
+            mmap = cache.pool_patch_mmap(cfg, layers, verbose=False)
+            sub = dict(sub)
+            sub["patch"] = {l: torch.as_tensor(np.asarray(mmap[l])) for l in layers}
         scope = f"full_pool({len(pool['label'])} 张)"
 
     layers = tuple(cfg.patch_layers)
-    res = PR.build_from_features(
-        sub["patch"][layers[-1]],
-        sub["mask14"],
-        sub["label"],
-        sub["has_mask"],
+    k_anom = int(getattr(cfg, "anomaly_proto_k", 6))
+    per_layer = bool(getattr(cfg, "proto_per_layer", True))
+    common = dict(
+        mask14=sub["mask14"],
+        label=sub["label"],
+        has_mask=sub["has_mask"],
         k=cfg.normal_proto_k,
+        k_anom=k_anom,
         double_norm=cfg.double_norm,
         seed=getattr(cfg, "seed", 111),
         n_init=getattr(cfg, "kmeans_n_init", 10),
         include_lesion_outside=getattr(cfg, "normal_pool_include_lesion_outside", False),
     )
+    if per_layer:
+        need = [l for l in layers if l not in sub["patch"]]
+        if need:
+            raise RuntimeError(f"分层原型需要 patch 层 {need}，prepare/rebuild 必须加载全部 patch_layers")
+        res = PR.build_layered(sub["patch"], layers, **common)
+    else:
+        res = PR.build_from_features(sub["patch"][layers[-1]], **common)
     res["meta"]["proto_source"] = cfg.proto_source
     res["meta"]["scope"] = scope
-    print(f"[proto] 来源 {scope} | K={res['meta']['k']} | double_norm={res['meta']['double_norm']}")
+    ka = res["meta"].get("k_anom", 1)
+    lay = res["meta"].get("layers", [layers[-1]])
+    print(f"[proto] 来源 {scope} | Kn={res['meta']['k']} Ka={ka} | "
+          f"layers={lay} | double_norm={res['meta']['double_norm']}")
     print(
         f"[proto] 正常 patch {res['meta']['n_normal_patches']:,} | "
         f"异常 patch {res['meta']['n_anomaly_patches']:,} "
@@ -116,7 +141,8 @@ def infer_text_sign(cfg, pool, pack, proto_entries, device="cpu", verbose=True):
         return 1.0
     l11 = tuple(cfg.patch_layers)[-1]
     patch = pool["patch"][l11][anom].to(device)
-    hm = SG.text_heatmap({l11: patch}, pack, (l11,), cfg.image_size)
+    hm = SG.text_heatmap({l11: patch}, pack, (l11,), cfg.image_size,
+                         attr_w=float(getattr(getattr(cfg, "text", None), "attr_w", 0.5)))
     mask = pool["mask14"][anom].reshape(len(anom), -1).to(hm.device)
     gap = diag.peak_gap(hm.reshape(len(anom), -1), mask)
     if gap != gap:
@@ -134,6 +160,7 @@ def prepare(cfg, device="cuda", need_pool_layers=False):
 
     val = cache.load(cfg, "val", layers=tuple(cfg.patch_layers))
     test = cache.load(cfg, "test", layers=tuple(cfg.patch_layers))
+    # pool 默认只留最后一层给 Memory；分层原型在 build_prototypes 里用 memmap 抽 few-shot
     pool = cache.load(cfg, "pool", layers=((tuple(cfg.patch_layers)[-1],) if not need_pool_layers
                                           else tuple(cfg.patch_layers)))
 
@@ -163,7 +190,13 @@ def prepare(cfg, device="cuda", need_pool_layers=False):
         ).to(device)
         adapter.load_state_dict(st_text["adapter"])
         adapter.eval()
-        pack = TA.apply_adapter(adapter, pack0)
+        # 必须 no_grad:否则 pack 里几个张量会带着挂在文本适配器上的计算图。
+        # train_text 的 backward 会把那张图释放,而 Stage 2 的 contrast_loss /
+        # hm_text 会把 pack 当冻结锚点用 —— 那时 backward 走到已被释放的图上,
+        # 报 "Trying to backward through the graph a second time"。
+        # 架构上文本锚点在阶段二本来就是冻结的,不该带梯度。
+        with torch.no_grad():
+            pack = TA.apply_adapter(adapter, pack0)
         w_text = TA.w_text_from_pack(pack)
         print("[text] 已加载 runs/.../text.pt 适配器")
 
@@ -200,17 +233,23 @@ def prepare(cfg, device="cuda", need_pool_layers=False):
 
 
 def build_memory_bank(cfg, pool, proto_entries, device="cpu"):
-    """支持集病灶内 patch + few-shot 正常 patch。"""
+    """支持集病灶内 patch + few-shot 正常 patch。每条记忆带 14×14 网格坐标。"""
     import torch.nn.functional as F
+    from .grid import nested, patch_xy
 
     l11 = tuple(cfg.patch_layers)[-1]
     patch = pool["patch"][l11]
-    mask = pool["mask14"].reshape(len(pool["label"]), -1)
+    n, l, d = patch.shape
+    H = int(l ** 0.5)
+    mask = pool["mask14"].reshape(n, -1)
     y = pool["label"]
+    xy = patch_xy(H, device=patch.device, dtype=torch.float32)
     valid = (y == 1) & pool["has_mask"] & mask.any(1)
     if not valid.any():
         raise RuntimeError("Memory Bank: 支持集没有非空 mask 的异常切片")
-    a_mem = F.normalize(patch[valid][mask[valid].bool()].float(), dim=-1)
+    a_feat = patch[valid][mask[valid].bool()].float()
+    a_pos = xy.unsqueeze(0).expand(int(valid.sum()), -1, -1)[mask[valid].bool()]
+    a_mem = F.normalize(a_feat, dim=-1)
     fs = pdata.select_few_shot(
         proto_entries, cfg.few_shot_normal, 0,
         seed=int(getattr(cfg, "seed", 111)),
@@ -220,6 +259,13 @@ def build_memory_bank(cfg, pool, proto_entries, device="cpu"):
     n_idx = [i for i, p in enumerate(paths) if p in want]
     if not n_idx:
         n_idx = (y == 0).nonzero(as_tuple=True)[0][: int(cfg.few_shot_normal)].tolist()
-    n_mem = F.normalize(patch[n_idx].reshape(-1, patch.shape[-1]).float(), dim=-1)
-    print(f"[mem] 异常 patch {a_mem.shape[0]} | 正常 patch {n_mem.shape[0]} (from {len(n_idx)} 张)")
-    return {"a": a_mem.to(device), "n": n_mem.to(device)}
+    n_feat = patch[n_idx].reshape(-1, d).float()
+    n_pos = xy.unsqueeze(0).expand(len(n_idx), -1, -1).reshape(-1, 2)
+    n_mem = F.normalize(n_feat, dim=-1)
+    pos_on = bool(nested(cfg, "memory", "pos_aware", True))
+    print(f"[mem] 异常 patch {a_mem.shape[0]} | 正常 patch {n_mem.shape[0]} "
+          f"(from {len(n_idx)} 张) | 位置感知={'开' if pos_on else '关'}")
+    return {
+        "a": a_mem.to(device), "n": n_mem.to(device),
+        "a_pos": a_pos.to(device), "n_pos": n_pos.to(device),
+    }
